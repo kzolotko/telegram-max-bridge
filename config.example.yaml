@@ -1,0 +1,43 @@
+# Telegram ↔ MAX Bridge Configuration
+
+telegram:
+  # Token of the Telegram bot that listens for messages in TG chats
+  listener_bot_token: "123456:ABC-DEF..."
+
+max:
+  # Token of the MAX bot that listens for messages in MAX chats
+  listener_bot_token: "max_listener_token_here"
+  # Optional: override MAX API base URL
+  # api_base_url: "https://app.api-messenger.com/max-v1/"
+
+# Pairs of chats to bridge
+chat_pairs:
+  - name: "team-general"
+    telegram_chat_id: -1001234567890
+    max_chat_id: 12345678
+
+  # Add more pairs as needed:
+  # - name: "team-dev"
+  #   telegram_chat_id: -1009876543210
+  #   max_chat_id: 87654321
+
+# User mappings (up to 10)
+# Each user needs a personal bot in both messengers for sending mirrored messages
+users:
+  - name: "Alice"
+    telegram_user_id: 111111111
+    max_user_id: 222222222
+    telegram_bot_token: "alice_tg_bot_token"
+    max_bot_token: "alice_max_bot_token"
+
+  - name: "Bob"
+    telegram_user_id: 333333333
+    max_user_id: 444444444
+    telegram_bot_token: "bob_tg_bot_token"
+    max_bot_token: "bob_max_bot_token"
+
+# Optional: fallback bot for messages from unmapped users
+fallback:
+  telegram_bot_token: "fallback_tg_bot_token"
+  max_bot_token: "fallback_max_bot_token"
+  message_prefix: true  # Prepend "[Display Name]: " to messages
