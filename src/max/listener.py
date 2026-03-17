@@ -1,0 +1,185 @@
+from vkmax.client import MaxClient
+
+from ..bridge.echo_guard import EchoGuard
+from ..config import ConfigLookup
+from ..types import AppConfig, BridgeEvent
+from .session import MaxSession
+
+from typing import Callable, Awaitable
+
+
+class MaxListener:
+    """Listens for messages in MAX using a user account via vkmax WebSocket."""
+
+    def __init__(
+        self,
+        config: AppConfig,
+        lookup: ConfigLookup,
+        echo_guard: EchoGuard,
+        on_event: Callable[[BridgeEvent], Awaitable[None]],
+    ):
+        self.config = config
+        self.lookup = lookup
+        self.echo_guard = echo_guard
+        self.on_event = on_event
+        self.client = MaxClient()
+        self._my_user_id: int | None = None
+
+    async def start(self) -> int:
+        session = MaxSession(self.config.listener_max_session, self.config.sessions_dir)
+        if not session.exists():
+            raise RuntimeError(
+                f"MAX listener session not found ({self.config.listener_max_session}). "
+                f"Run 'python -m src.auth' first."
+            )
+
+        login_token = session.load()
+        await self.client.connect()
+        login_response = await self.client.login_by_token(login_token)
+
+        # Extract user ID from login response
+        if login_response and "payload" in login_response:
+            profile = login_response["payload"].get("profile", {})
+            self._my_user_id = profile.get("userId", 0)
+
+        await self.client.set_callback(self._handle_packet)
+        print(f"[MAX Listener] Started (User ID: {self._my_user_id})")
+        return self._my_user_id or 0
+
+    async def stop(self):
+        try:
+            await self.client.disconnect()
+        except Exception:
+            pass
+
+    async def _handle_packet(self, client: MaxClient, packet: dict):
+        try:
+            opcode = packet.get("opcode", 0)
+
+            if opcode == 128:  # Incoming message
+                await self._handle_message(packet)
+            elif opcode == 67:  # Message edited
+                await self._handle_edited_message(packet)
+            elif opcode == 66:  # Message deleted
+                await self._handle_deleted_message(packet)
+        except Exception as e:
+            print(f"[MAX Listener] Error handling packet (opcode={packet.get('opcode')}): {e}")
+
+    async def _handle_message(self, packet: dict):
+        payload = packet.get("payload", {})
+        chat_id = payload.get("chatId")
+        sender_id = payload.get("fromUserId")
+        message = payload.get("message", {})
+
+        if not chat_id or not sender_id:
+            return
+
+        if self.echo_guard.is_managed_max_user(sender_id):
+            return
+
+        chat_pair = self.lookup.get_pair_by_max_chat(chat_id)
+        if not chat_pair:
+            return
+
+        user = self.lookup.get_user_by_max_id(sender_id)
+        sender_name = payload.get("senderName", "Unknown")
+        msg_id = str(message.get("id", ""))
+        text = message.get("text")
+        attaches = message.get("attaches", [])
+
+        # Check for reply
+        reply_to = None
+        link = message.get("link")
+        if link and link.get("type") == "REPLY":
+            reply_to = link.get("messageId")
+
+        # Handle attachments (media download not yet supported, send text placeholder)
+        for att in attaches:
+            att_type = att.get("_type", "")
+
+            if att_type in ("PHOTO", "VIDEO", "FILE", "AUDIO"):
+                label = att_type.capitalize()
+                await self.on_event(BridgeEvent(
+                    direction="max-to-tg",
+                    chat_pair=chat_pair,
+                    user=user,
+                    sender_display_name=sender_name,
+                    event_type="text",
+                    text=f"{text or ''}\n[{label} — media transfer not yet supported]".strip(),
+                    reply_to_source_msg_id=reply_to,
+                    source_msg_id=msg_id,
+                ))
+                return
+
+            if att_type == "STICKER":
+                await self.on_event(BridgeEvent(
+                    direction="max-to-tg",
+                    chat_pair=chat_pair,
+                    user=user,
+                    sender_display_name=sender_name,
+                    event_type="sticker",
+                    text="[Sticker]",
+                    reply_to_source_msg_id=reply_to,
+                    source_msg_id=msg_id,
+                ))
+                return
+
+        # Text-only message
+        if text:
+            await self.on_event(BridgeEvent(
+                direction="max-to-tg",
+                chat_pair=chat_pair,
+                user=user,
+                sender_display_name=sender_name,
+                event_type="text",
+                text=text,
+                reply_to_source_msg_id=reply_to,
+                source_msg_id=msg_id,
+            ))
+
+    async def _handle_edited_message(self, packet: dict):
+        payload = packet.get("payload", {})
+        chat_id = payload.get("chatId")
+        msg_id = str(payload.get("messageId", ""))
+        text = payload.get("text")
+
+        if not chat_id or not msg_id:
+            return
+
+        chat_pair = self.lookup.get_pair_by_max_chat(chat_id)
+        if not chat_pair:
+            return
+
+        await self.on_event(BridgeEvent(
+            direction="max-to-tg",
+            chat_pair=chat_pair,
+            user=None,
+            sender_display_name="Unknown",
+            event_type="edit",
+            text=text,
+            edit_source_msg_id=msg_id,
+            source_msg_id=msg_id,
+        ))
+
+    async def _handle_deleted_message(self, packet: dict):
+        payload = packet.get("payload", {})
+        chat_id = payload.get("chatId")
+        message_ids = payload.get("messageIds", [])
+
+        if not chat_id:
+            return
+
+        chat_pair = self.lookup.get_pair_by_max_chat(chat_id)
+        if not chat_pair:
+            return
+
+        for mid in message_ids:
+            await self.on_event(BridgeEvent(
+                direction="max-to-tg",
+                chat_pair=chat_pair,
+                user=None,
+                sender_display_name="Unknown",
+                event_type="delete",
+                delete_source_msg_id=str(mid),
+                source_msg_id=str(mid),
+            ))

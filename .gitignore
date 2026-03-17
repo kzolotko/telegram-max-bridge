@@ -1,5 +1,11 @@
-node_modules/
-dist/
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
 config.yaml
+sessions/
+*.session
 *.log
 .DS_Store
+.env

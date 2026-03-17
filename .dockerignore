@@ -1,6 +1,9 @@
-node_modules
-dist
 .git
-.gitignore
-*.md
+.venv
+venv
+__pycache__
+*.pyc
 config.yaml
+sessions/
+*.session
+*.md
