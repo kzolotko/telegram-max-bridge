@@ -52,18 +52,51 @@ async def auth_max(session_name: str, sessions_dir: str):
         try:
             await client.login_by_token(login_token)
             print(f"  Verified: session is valid.")
-            await client.disconnect()
             return
         except Exception:
             print(f"  Session expired. Re-authenticating...")
-            await client.disconnect()
+        finally:
+            try:
+                await client._connection.close()
+            except Exception:
+                pass
 
     print(f"  Authenticating MAX session '{session_name}'...")
     client = MaxClient()
     await client.connect()
 
+    # Check if phone auth is available from this location
+    hello_resp = await client._send_hello_packet()
+    hello_payload = hello_resp.get("payload", {})
+    if not hello_payload.get("phone-auth-enabled", True):
+        location = hello_payload.get("location", "unknown")
+        await client._connection.close()
+        raise RuntimeError(
+            f"\n"
+            f"  ❌ MAX phone authentication is not available from your current location.\n"
+            f"  Server detected your location as: {location}\n"
+            f"\n"
+            f"  MAX (VK Teams / oneme.ru) only allows phone auth from Russian IP addresses.\n"
+            f"  Possible fixes:\n"
+            f"    1. Disable your VPN (most likely cause — you appear to be routing through {location})\n"
+            f"    2. Enable a VPN with a Russian exit node and retry\n"
+            f"    3. Run auth on a machine with a Russian IP address\n"
+            f"\n"
+            f"  After fixing your network, re-run: python -m src.auth"
+        )
+
     phone = input("  Enter phone number (e.g. +79991234567): ").strip()
-    sms_token = await client.send_code(phone)
+
+    try:
+        sms_token = await client.send_code(phone)
+    except KeyError as e:
+        await client._connection.close()
+        raise RuntimeError(
+            f"  ❌ Unexpected response from MAX server (key missing: {e}).\n"
+            f"  This may indicate a geo-restriction or API change.\n"
+            f"  Try disabling VPN and retry."
+        )
+
     print("  SMS code sent!")
 
     code = int(input("  Enter SMS code: ").strip())
