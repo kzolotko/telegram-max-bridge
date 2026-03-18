@@ -5,7 +5,7 @@ from pyrogram import Client, filters
 from pyrogram.types import Message
 from pyrogram.handlers import MessageHandler, EditedMessageHandler, DeletedMessagesHandler
 
-from ..bridge.echo_guard import EchoGuard
+from ..bridge.mirror_tracker import MirrorTracker
 from ..config import ConfigLookup
 from ..types import AppConfig, BridgeEvent, MediaInfo
 
@@ -19,12 +19,12 @@ class TelegramListener:
         self,
         config: AppConfig,
         lookup: ConfigLookup,
-        echo_guard: EchoGuard,
+        mirror_tracker: MirrorTracker,
         on_event: Callable[[BridgeEvent], Awaitable[None]],
     ):
         self.config = config
         self.lookup = lookup
-        self.echo_guard = echo_guard
+        self.mirrors = mirror_tracker
         self.on_event = on_event
         self.client = Client(
             name=config.listener_telegram_session,
@@ -52,9 +52,10 @@ class TelegramListener:
 
     async def _handle_message(self, client: Client, message: Message):
         try:
-            sender_id = message.from_user.id if message.from_user else None
-            if not sender_id or self.echo_guard.is_managed_tg_user(sender_id):
+            if self.mirrors.is_tg_mirror(message.id):
                 return
+
+            sender_id = message.from_user.id if message.from_user else None
 
             chat_pair = self.lookup.get_pair_by_tg_chat(message.chat.id)
             if not chat_pair:
@@ -148,9 +149,10 @@ class TelegramListener:
 
     async def _handle_edited_message(self, client: Client, message: Message):
         try:
-            sender_id = message.from_user.id if message.from_user else None
-            if not sender_id or self.echo_guard.is_managed_tg_user(sender_id):
+            if self.mirrors.is_tg_mirror(message.id):
                 return
+
+            sender_id = message.from_user.id if message.from_user else None
 
             chat_pair = self.lookup.get_pair_by_tg_chat(message.chat.id)
             if not chat_pair:

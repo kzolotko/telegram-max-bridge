@@ -9,7 +9,7 @@ import signal
 
 from .config import load_config, ConfigLookup
 from .message_store import MessageStore
-from .bridge.echo_guard import EchoGuard
+from .bridge.mirror_tracker import MirrorTracker
 from .bridge.bridge import Bridge
 from .telegram.client_pool import TelegramClientPool
 from .telegram.listener import TelegramListener
@@ -42,31 +42,25 @@ async def main():
     message_store = MessageStore()
     message_store.start()
 
-    echo_guard = EchoGuard()
+    mirror_tracker = MirrorTracker()
 
     log.info("Initializing Telegram user accounts...")
     tg_pool = TelegramClientPool(config)
-    tg_user_ids = await tg_pool.init(config.users)
-    for uid in tg_user_ids:
-        echo_guard.add_tg_user_id(uid)
+    await tg_pool.init(config.users)
 
     log.info("Initializing MAX user accounts...")
     max_pool = MaxClientPool(config)
-    max_user_ids = await max_pool.init(config.users)
-    for uid in max_user_ids:
-        echo_guard.add_max_user_id(uid)
+    await max_pool.init(config.users)
 
-    bridge = Bridge(lookup, message_store, tg_pool, max_pool)
+    bridge = Bridge(lookup, message_store, tg_pool, max_pool, mirror_tracker)
 
     log.info("Starting Telegram listener...")
-    tg_listener = TelegramListener(config, lookup, echo_guard, bridge.handle_event)
-    tg_listener_id = await tg_listener.start()
-    echo_guard.add_tg_user_id(tg_listener_id)
+    tg_listener = TelegramListener(config, lookup, mirror_tracker, bridge.handle_event)
+    await tg_listener.start()
 
     log.info("Starting MAX listener...")
-    max_listener = MaxListener(config, lookup, echo_guard, bridge.handle_event)
-    max_listener_id = await max_listener.start()
-    echo_guard.add_max_user_id(max_listener_id)
+    max_listener = MaxListener(config, lookup, mirror_tracker, bridge.handle_event)
+    await max_listener.start()
 
     log.info("Ready! Bridging messages between Telegram and MAX.")
 

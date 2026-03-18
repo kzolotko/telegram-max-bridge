@@ -5,7 +5,7 @@ from typing import Callable, Awaitable
 from vkmax.client import MaxClient
 from .patched_client import PatchedMaxClient
 
-from ..bridge.echo_guard import EchoGuard
+from ..bridge.mirror_tracker import MirrorTracker
 from ..config import ConfigLookup
 from ..types import AppConfig, BridgeEvent, MediaInfo
 from .session import MaxSession
@@ -24,12 +24,12 @@ class MaxListener:
         self,
         config: AppConfig,
         lookup: ConfigLookup,
-        echo_guard: EchoGuard,
+        mirror_tracker: MirrorTracker,
         on_event: Callable[[BridgeEvent], Awaitable[None]],
     ):
         self.config = config
         self.lookup = lookup
-        self.echo_guard = echo_guard
+        self.mirrors = mirror_tracker
         self.on_event = on_event
         self.client: MaxClient | None = None
         self._my_user_id: int | None = None
@@ -46,7 +46,13 @@ class MaxListener:
             )
 
         self._login_token = session.load()
+        # Use stored user_id as fallback when server returns null on login
+        stored_user_id = session.load_user_id()
         await self._connect()
+
+        if not self._my_user_id and stored_user_id:
+            self._my_user_id = stored_user_id
+            log.info("Using stored user_id as fallback: %d", self._my_user_id)
 
         self._monitor_task = asyncio.create_task(self._reconnect_loop())
 
@@ -119,20 +125,20 @@ class MaxListener:
         chat_id = payload.get("chatId")
         sender_id = payload.get("fromUserId")
         message = payload.get("message", {})
+        msg_id = str(message.get("id", ""))
 
-        if not chat_id or not sender_id:
+        if not chat_id:
             return
 
-        if self.echo_guard.is_managed_max_user(sender_id):
+        if msg_id and self.mirrors.is_max_mirror(msg_id):
             return
 
         chat_pair = self.lookup.get_pair_by_max_chat(chat_id)
         if not chat_pair:
             return
 
-        user = self.lookup.get_user_by_max_id(sender_id)
+        user = self.lookup.get_user_by_max_id(sender_id) if sender_id else None
         sender_name = payload.get("senderName", "Unknown")
-        msg_id = str(message.get("id", ""))
         text = message.get("text")
         attaches = message.get("attaches", [])
 
@@ -223,7 +229,7 @@ class MaxListener:
         if not chat_id or not msg_id:
             return
 
-        if sender_id and self.echo_guard.is_managed_max_user(sender_id):
+        if self.mirrors.is_max_mirror(msg_id):
             return
 
         chat_pair = self.lookup.get_pair_by_max_chat(chat_id)

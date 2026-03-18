@@ -44,7 +44,7 @@ async def verify_and_save(session_name: str, token: str, sessions_dir: str):
             pass
 
     session = MaxSession(session_name, sessions_dir)
-    session.save(token)
+    session.save(token, user_id=user_id)
     path = Path(sessions_dir) / f"{session_name}.max_session"
     print(f"\n  Session saved → {path}")
     return True

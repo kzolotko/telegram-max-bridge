@@ -7,6 +7,7 @@ from ..telegram.client_pool import TelegramClientPool
 from ..max.client_pool import MaxClientPool
 from ..types import BridgeEvent
 from .formatting import prepend_sender_name
+from .mirror_tracker import MirrorTracker
 
 log = logging.getLogger("bridge.core")
 
@@ -18,11 +19,13 @@ class Bridge:
         message_store: MessageStore,
         tg_pool: TelegramClientPool,
         max_pool: MaxClientPool,
+        mirror_tracker: MirrorTracker,
     ):
         self.lookup = lookup
         self.store = message_store
         self.tg_pool = tg_pool
         self.max_pool = max_pool
+        self.mirrors = mirror_tracker
 
     async def handle_event(self, event: BridgeEvent):
         try:
@@ -51,6 +54,7 @@ class Bridge:
             max_msg_id = await self.max_pool.send_text(max_user_id, max_chat_id, text, reply_to)
             if max_msg_id and event.source_msg_id is not None:
                 self.store.store(pair.name, int(event.source_msg_id), max_msg_id)
+                self.mirrors.mark_max(max_msg_id)
 
         elif event.event_type == "photo" and event.media:
             max_msg_id = await self.max_pool.send_photo(
@@ -59,6 +63,7 @@ class Bridge:
             )
             if max_msg_id and event.source_msg_id is not None:
                 self.store.store(pair.name, int(event.source_msg_id), max_msg_id)
+                self.mirrors.mark_max(max_msg_id)
 
         elif event.event_type in ("video", "file", "audio") and event.media:
             max_msg_id = await self.max_pool.send_file(
@@ -67,6 +72,7 @@ class Bridge:
             )
             if max_msg_id and event.source_msg_id is not None:
                 self.store.store(pair.name, int(event.source_msg_id), max_msg_id)
+                self.mirrors.mark_max(max_msg_id)
 
         elif event.event_type in ("photo", "video", "file", "audio"):
             fallback_text = f"{text}\n[{event.event_type.capitalize()} — media download failed]".strip()
@@ -75,6 +81,7 @@ class Bridge:
             max_msg_id = await self.max_pool.send_text(max_user_id, max_chat_id, fallback_text, reply_to)
             if max_msg_id and event.source_msg_id is not None:
                 self.store.store(pair.name, int(event.source_msg_id), max_msg_id)
+                self.mirrors.mark_max(max_msg_id)
 
         elif event.event_type == "sticker":
             sticker_text = text or "[Sticker]"
@@ -83,6 +90,7 @@ class Bridge:
             max_msg_id = await self.max_pool.send_text(max_user_id, max_chat_id, sticker_text, reply_to)
             if max_msg_id and event.source_msg_id is not None:
                 self.store.store(pair.name, int(event.source_msg_id), max_msg_id)
+                self.mirrors.mark_max(max_msg_id)
 
         elif event.event_type == "edit":
             if event.edit_source_msg_id is not None:
@@ -134,6 +142,7 @@ class Bridge:
             )
             if event.source_msg_id is not None:
                 self.store.store(pair.name, msg.id, str(event.source_msg_id))
+            self.mirrors.mark_tg(msg.id)
 
         elif event.event_type == "photo" and event.media:
             caption = text if text else None
@@ -145,6 +154,7 @@ class Bridge:
             )
             if event.source_msg_id is not None:
                 self.store.store(pair.name, msg.id, str(event.source_msg_id))
+            self.mirrors.mark_tg(msg.id)
 
         elif event.event_type in ("video", "audio", "file") and event.media:
             caption = text if text else None
@@ -161,18 +171,21 @@ class Bridge:
             )
             if event.source_msg_id is not None:
                 self.store.store(pair.name, msg.id, str(event.source_msg_id))
+            self.mirrors.mark_tg(msg.id)
 
         elif event.event_type in ("photo", "video", "audio", "file"):
             fallback = f"{text}\n[{event.event_type.capitalize()} — media unavailable]".strip()
             msg = await client.send_message(tg_chat_id, fallback, reply_to_message_id=reply_to)
             if event.source_msg_id is not None:
                 self.store.store(pair.name, msg.id, str(event.source_msg_id))
+            self.mirrors.mark_tg(msg.id)
 
         elif event.event_type == "sticker":
             sticker_text = text or "[Sticker]"
             msg = await client.send_message(tg_chat_id, sticker_text, reply_to_message_id=reply_to)
             if event.source_msg_id is not None:
                 self.store.store(pair.name, msg.id, str(event.source_msg_id))
+            self.mirrors.mark_tg(msg.id)
 
         elif event.event_type == "edit":
             if event.edit_source_msg_id is not None:
