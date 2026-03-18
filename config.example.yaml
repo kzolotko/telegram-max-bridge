@@ -1,42 +1,77 @@
-# Telegram ↔ MAX Bridge Configuration
-# Uses real user accounts (not bots) on both sides.
+# Telegram ↔ MAX Bridge — Example Configuration
+#
+# Copy to config.yaml and fill in your values:
+#   cp config.example.yaml config.yaml
+#
+# Then authenticate accounts:
+#   python -m src.auth
+#
+# Then run:
+#   python -m src
 
-# Telegram API credentials (get from https://my.telegram.org)
+# ─── Telegram API credentials ─────────────────────────────────────────────────
+# Get from: https://my.telegram.org → API development tools
+# One application is shared by all user accounts in this config.
 api_id: 12345678
 api_hash: "0123456789abcdef0123456789abcdef"
 
-# Session names for listener accounts.
-# These accounts must be members of ALL chats listed in chat_pairs.
-# Sessions are created by running: python -m src.auth
-listener_telegram_session: "tg_listener"
-listener_max_session: "max_listener"
-
-# Directory for session files
+# ─── Session storage ──────────────────────────────────────────────────────────
+# Directory for session files (relative to project root).
+# Session filenames are derived automatically:
+#   Telegram → sessions/tg_{user.name}.session
+#   MAX      → sessions/max_{user.name}.max_session
 sessions_dir: "sessions"
 
-# Pairs of chats to bridge (bidirectional)
-chat_pairs:
+# ─── Bridge entries ───────────────────────────────────────────────────────────
+# Each entry connects one Telegram chat with one MAX chat via one user account.
+# That user's accounts handle both listening and mirroring in both directions.
+# Sender name is always prepended: "[Alice]: Hello"
+#
+# How to find IDs:
+#
+#   telegram_chat_id  — forward any message from the group to @userinfobot,
+#                       it will reply with the chat ID (negative number).
+#                       For supergroups the ID starts with -100.
+#
+#   max_chat_id       — open the chat at web.max.ru, the ID is in the URL:
+#                       https://web.max.ru/#/chats/@chat/-72099589405396
+#
+#   telegram_user_id  — message @userinfobot directly, it replies with your ID.
+#
+#   max_user_id       — visible in the output of `python -m src.auth` after
+#                       MAX login, or find viewerId at web.max.ru in your profile.
+#
+# user.name must be alphanumeric (letters and digits only) — it is used to
+# build session filenames (tg_alice.session, max_alice.max_session).
+
+bridges:
+  # ── Minimal example: one chat, one user ─────────────────────────────────────
+  - name: "team-general"              # unique key used in logs and message store
+    telegram_chat_id: -1001234567890  # Telegram group/supergroup ID
+    max_chat_id: -72099000000001      # MAX chat ID
+    user:
+      name: "alice"                   # short alphanumeric name
+      telegram_user_id: 111111111     # numeric Telegram user ID
+      max_user_id: 205111111          # numeric MAX user ID
+
+  # ── Same user, second chat ───────────────────────────────────────────────────
+  # Alice's account will also bridge this chat pair.
+  # Session files are reused — no extra authentication needed.
+  - name: "team-dev"
+    telegram_chat_id: -1009876543210
+    max_chat_id: -72099000000002
+    user:
+      name: "alice"
+      telegram_user_id: 111111111
+      max_user_id: 205111111
+
+  # ── Second user in the same chat ────────────────────────────────────────────
+  # Bob bridges the same team-general chat independently with his own accounts.
+  # Each user sees all messages from the other side and forwards them.
   - name: "team-general"
-    telegram_chat_id: -1001234567890   # TG chat/supergroup ID
-    max_chat_id: -68093732121255       # MAX chat ID
-
-  # Add more pairs:
-  # - name: "team-dev"
-  #   telegram_chat_id: -1009876543210
-  #   max_chat_id: -68093732654321
-
-# User mappings (up to 10)
-# Each user authenticates their real accounts in both messengers.
-# When user sends a message in TG, their MAX account sends the mirror.
-users:
-  - name: "Alice"
-    telegram_user_id: 111111111        # TG numeric user ID
-    max_user_id: 175123456789          # MAX numeric user ID
-    telegram_session: "tg_alice"       # Pyrogram session name
-    max_session: "max_alice"           # MAX session name
-
-  - name: "Bob"
-    telegram_user_id: 333333333
-    max_user_id: 175987654321
-    telegram_session: "tg_bob"
-    max_session: "max_bob"
+    telegram_chat_id: -1001234567890
+    max_chat_id: -72099000000001
+    user:
+      name: "bob"
+      telegram_user_id: 333333333
+      max_user_id: 205333333
