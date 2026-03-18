@@ -69,6 +69,15 @@ async def main():
 
     log.info("Ready! Bridging messages between Telegram and MAX.")
 
+    log.info("Bridge is active. Monitoring:")
+    for pair in config.chat_pairs:
+        log.info("  [TG] %s  <->  [MAX] %s   (%s)",
+                 pair.telegram_chat_id, pair.max_chat_id, pair.name)
+    log.info("Users:")
+    for user in config.users:
+        log.info("  %-12s  TG:%-15s  MAX:%s",
+                 user.name, user.telegram_user_id, user.max_user_id)
+
     shutdown_event = asyncio.Event()
 
     def _shutdown():

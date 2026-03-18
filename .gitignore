@@ -6,6 +6,7 @@ venv/
 config.yaml
 sessions/
 *.session
+*.max_session
 *.log
 .DS_Store
 .env
