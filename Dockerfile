@@ -1,8 +1,9 @@
 FROM python:3.12-slim
 
-# gcc is required by some cryptographic packages (tgcrypto)
+# gcc + libc6-dev are required to compile tgcrypto (C extension)
 RUN apt-get update && apt-get install -y --no-install-recommends \
         gcc \
+        libc6-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
