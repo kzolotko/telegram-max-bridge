@@ -1,6 +1,7 @@
 import logging
 
 from vkmax.client import MaxClient
+from .patched_client import PatchedMaxClient
 from vkmax.functions.messages import send_message, reply_message, edit_message, delete_message
 
 from ..types import AppConfig, UserMapping
@@ -34,7 +35,7 @@ class MaxClientPool:
                 )
 
             login_token = session.load()
-            client = MaxClient()
+            client = PatchedMaxClient()
             await client.connect()
             await client.login_by_token(login_token)
 

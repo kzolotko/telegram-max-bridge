@@ -14,7 +14,7 @@ from .config import load_config
 from .max.session import MaxSession
 
 try:
-    from vkmax.client import MaxClient
+    from .max.patched_client import PatchedMaxClient as MaxClient
 except ImportError:
     MaxClient = None
 

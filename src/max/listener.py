@@ -3,6 +3,7 @@ import logging
 from typing import Callable, Awaitable
 
 from vkmax.client import MaxClient
+from .patched_client import PatchedMaxClient
 
 from ..bridge.echo_guard import EchoGuard
 from ..config import ConfigLookup
@@ -53,7 +54,7 @@ class MaxListener:
         return self._my_user_id or 0
 
     async def _connect(self):
-        self.client = MaxClient()
+        self.client = PatchedMaxClient()
         await self.client.connect()
         login_response = await self.client.login_by_token(self._login_token)
 
