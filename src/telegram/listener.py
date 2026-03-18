@@ -7,13 +7,17 @@ from pyrogram.handlers import MessageHandler, EditedMessageHandler, DeletedMessa
 
 from ..bridge.mirror_tracker import MirrorTracker
 from ..config import ConfigLookup
-from ..types import AppConfig, BridgeEvent, MediaInfo
+from ..types import AppConfig, BridgeEvent, MediaInfo, UserMapping
 
 log = logging.getLogger("bridge.tg.listener")
 
 
 class TelegramListener:
-    """Listens for messages in Telegram using a user account."""
+    """Listens for messages in Telegram using a user account.
+
+    Reuses an already-started Pyrogram *client* from the pool — the pool
+    manages its lifecycle, so start/stop here are no-ops for the client.
+    """
 
     def __init__(
         self,
@@ -21,47 +25,41 @@ class TelegramListener:
         lookup: ConfigLookup,
         mirror_tracker: MirrorTracker,
         on_event: Callable[[BridgeEvent], Awaitable[None]],
+        client: Client,
+        user: UserMapping,
     ):
         self.config = config
         self.lookup = lookup
         self.mirrors = mirror_tracker
         self.on_event = on_event
-        self.client = Client(
-            name=config.listener_telegram_session,
-            api_id=config.api_id,
-            api_hash=config.api_hash,
-            workdir=config.sessions_dir,
-        )
+        self.client = client
+        self.user = user
 
     async def start(self) -> int:
-        # Register handlers before starting
-        monitored_chat_ids = [cp.telegram_chat_id for cp in self.config.chat_pairs]
-        chat_filter = filters.chat(monitored_chat_ids)
+        chat_ids = self.lookup.get_tg_chat_ids_for_user(self.user.telegram_user_id)
+        chat_filter = filters.chat(chat_ids)
 
         self.client.add_handler(MessageHandler(self._handle_message, chat_filter))
         self.client.add_handler(EditedMessageHandler(self._handle_edited_message, chat_filter))
         self.client.add_handler(DeletedMessagesHandler(self._handle_deleted_messages, chat_filter))
 
-        await self.client.start()
         me = await self.client.get_me()
-        log.info("Started as @%s (ID: %d)", me.username, me.id)
+        log.info("Started for %s as @%s (ID: %d)", self.user.name, me.username, me.id)
         return me.id
 
     async def stop(self):
-        await self.client.stop()
+        pass  # client lifecycle is owned by TelegramClientPool
 
     async def _handle_message(self, client: Client, message: Message):
         try:
             if self.mirrors.is_tg_mirror(message.id):
+                log.debug("TG msg %s → is mirror, skipping", message.id)
                 return
 
-            sender_id = message.from_user.id if message.from_user else None
-
-            chat_pair = self.lookup.get_pair_by_tg_chat(message.chat.id)
-            if not chat_pair:
+            bridge_entry = self.lookup.get_bridge_by_tg(message.chat.id, self.user.telegram_user_id)
+            if not bridge_entry:
                 return
 
-            user = self.lookup.get_user_by_tg_id(sender_id)
             sender_name = self._get_sender_name(message)
 
             reply_to = None
@@ -72,8 +70,7 @@ class TelegramListener:
                 media = await self._download_media(message)
                 await self.on_event(BridgeEvent(
                     direction="tg-to-max",
-                    chat_pair=chat_pair,
-                    user=user,
+                    bridge_entry=bridge_entry,
                     sender_display_name=sender_name,
                     event_type="photo",
                     text=message.caption,
@@ -85,8 +82,7 @@ class TelegramListener:
                 media = await self._download_media(message)
                 await self.on_event(BridgeEvent(
                     direction="tg-to-max",
-                    chat_pair=chat_pair,
-                    user=user,
+                    bridge_entry=bridge_entry,
                     sender_display_name=sender_name,
                     event_type="video",
                     text=message.caption,
@@ -100,8 +96,7 @@ class TelegramListener:
                     media.filename = message.document.file_name or media.filename
                 await self.on_event(BridgeEvent(
                     direction="tg-to-max",
-                    chat_pair=chat_pair,
-                    user=user,
+                    bridge_entry=bridge_entry,
                     sender_display_name=sender_name,
                     event_type="file",
                     text=message.caption,
@@ -113,8 +108,7 @@ class TelegramListener:
                 media = await self._download_media(message)
                 await self.on_event(BridgeEvent(
                     direction="tg-to-max",
-                    chat_pair=chat_pair,
-                    user=user,
+                    bridge_entry=bridge_entry,
                     sender_display_name=sender_name,
                     event_type="audio",
                     text=message.caption,
@@ -125,8 +119,7 @@ class TelegramListener:
             elif message.sticker:
                 await self.on_event(BridgeEvent(
                     direction="tg-to-max",
-                    chat_pair=chat_pair,
-                    user=user,
+                    bridge_entry=bridge_entry,
                     sender_display_name=sender_name,
                     event_type="sticker",
                     text=f"[Sticker: {message.sticker.emoji or ''}]",
@@ -136,8 +129,7 @@ class TelegramListener:
             elif message.text:
                 await self.on_event(BridgeEvent(
                     direction="tg-to-max",
-                    chat_pair=chat_pair,
-                    user=user,
+                    bridge_entry=bridge_entry,
                     sender_display_name=sender_name,
                     event_type="text",
                     text=message.text,
@@ -152,19 +144,15 @@ class TelegramListener:
             if self.mirrors.is_tg_mirror(message.id):
                 return
 
-            sender_id = message.from_user.id if message.from_user else None
-
-            chat_pair = self.lookup.get_pair_by_tg_chat(message.chat.id)
-            if not chat_pair:
+            bridge_entry = self.lookup.get_bridge_by_tg(message.chat.id, self.user.telegram_user_id)
+            if not bridge_entry:
                 return
 
-            user = self.lookup.get_user_by_tg_id(sender_id)
             sender_name = self._get_sender_name(message)
 
             await self.on_event(BridgeEvent(
                 direction="tg-to-max",
-                chat_pair=chat_pair,
-                user=user,
+                bridge_entry=bridge_entry,
                 sender_display_name=sender_name,
                 event_type="edit",
                 text=message.text or message.caption,
@@ -181,14 +169,13 @@ class TelegramListener:
                 # channel deletes carry the channel_id).  Skip unknown chats.
                 if not message.chat:
                     continue
-                chat_pair = self.lookup.get_pair_by_tg_chat(message.chat.id)
-                if not chat_pair:
+                bridge_entry = self.lookup.get_bridge_by_tg(message.chat.id, self.user.telegram_user_id)
+                if not bridge_entry:
                     continue
 
                 await self.on_event(BridgeEvent(
                     direction="tg-to-max",
-                    chat_pair=chat_pair,
-                    user=None,
+                    bridge_entry=bridge_entry,
                     sender_display_name="Unknown",
                     event_type="delete",
                     delete_source_msg_id=message.id,

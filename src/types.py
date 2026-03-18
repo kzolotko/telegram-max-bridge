@@ -3,29 +3,35 @@ from typing import Optional
 
 
 @dataclass
-class ChatPair:
-    name: str
-    telegram_chat_id: int
-    max_chat_id: int
-
-
-@dataclass
 class UserMapping:
     name: str
     telegram_user_id: int
     max_user_id: int
-    telegram_session: str  # Pyrogram session name (file in sessions/)
-    max_session: str  # MAX session name (file in sessions/)
+
+    @property
+    def telegram_session(self) -> str:
+        """Pyrogram session filename (in sessions/): tg_{name}.session"""
+        return f"tg_{self.name}"
+
+    @property
+    def max_session(self) -> str:
+        """MAX session filename (in sessions/): max_{name}.max_session"""
+        return f"max_{self.name}"
+
+
+@dataclass
+class BridgeEntry:
+    name: str
+    telegram_chat_id: int
+    max_chat_id: int
+    user: UserMapping
 
 
 @dataclass
 class AppConfig:
     api_id: int  # Telegram API ID from my.telegram.org
     api_hash: str  # Telegram API hash
-    listener_telegram_session: str  # Session name for TG listener account
-    listener_max_session: str  # Session name for MAX listener account
-    chat_pairs: list[ChatPair] = field(default_factory=list)
-    users: list[UserMapping] = field(default_factory=list)
+    bridges: list['BridgeEntry'] = field(default_factory=list)
     sessions_dir: str = "sessions"
 
 
@@ -39,8 +45,7 @@ class MediaInfo:
 @dataclass
 class BridgeEvent:
     direction: str  # 'tg-to-max' or 'max-to-tg'
-    chat_pair: ChatPair
-    user: Optional[UserMapping]
+    bridge_entry: BridgeEntry
     sender_display_name: str
     event_type: str  # 'text', 'photo', 'video', 'file', 'audio', 'sticker', 'edit', 'delete'
     text: Optional[str] = None

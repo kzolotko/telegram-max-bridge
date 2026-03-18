@@ -10,7 +10,7 @@ from pathlib import Path
 
 from pyrogram import Client
 
-from .config import load_config
+from .config import load_config, ConfigLookup
 from .max.session import MaxSession
 
 try:
@@ -73,7 +73,7 @@ async def auth_max(session_name: str, sessions_dir: str):
         await client._connection.close()
         raise RuntimeError(
             f"\n"
-            f"  ❌ MAX phone authentication is not available from your current location.\n"
+            f"  MAX phone authentication is not available from your current location.\n"
             f"  Server detected your location as: {location}\n"
             f"\n"
             f"  MAX (VK Teams / oneme.ru) only allows phone auth from Russian IP addresses.\n"
@@ -92,7 +92,7 @@ async def auth_max(session_name: str, sessions_dir: str):
     except KeyError as e:
         await client._connection.close()
         raise RuntimeError(
-            f"  ❌ Unexpected response from MAX server (key missing: {e}).\n"
+            f"  Unexpected response from MAX server (key missing: {e}).\n"
             f"  This may indicate a geo-restriction or API change.\n"
             f"  Try disabling VPN and retry."
         )
@@ -118,15 +118,9 @@ async def main():
     sessions_dir = config.sessions_dir
     Path(sessions_dir).mkdir(parents=True, exist_ok=True)
 
-    # 1. Authenticate listener accounts
-    print("\n--- Telegram Listener Account ---")
-    await auth_telegram(config.listener_telegram_session, config.api_id, config.api_hash, sessions_dir)
+    users = ConfigLookup(config).get_unique_users()
 
-    print("\n--- MAX Listener Account ---")
-    await auth_max(config.listener_max_session, sessions_dir)
-
-    # 2. Authenticate user accounts
-    for user in config.users:
+    for user in users:
         print(f"\n--- User: {user.name} ---")
 
         print(f"  [Telegram]")

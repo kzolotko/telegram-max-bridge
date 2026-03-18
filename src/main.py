@@ -36,8 +36,7 @@ async def main():
     log.info("Loading configuration...")
     config = load_config()
     lookup = ConfigLookup(config)
-
-    log.info("%d chat pair(s), %d user mapping(s)", len(config.chat_pairs), len(config.users))
+    users = lookup.get_unique_users()
 
     message_store = MessageStore()
     message_store.start()
@@ -46,32 +45,36 @@ async def main():
 
     log.info("Initializing Telegram user accounts...")
     tg_pool = TelegramClientPool(config)
-    await tg_pool.init(config.users)
+    await tg_pool.init(users)
 
     log.info("Initializing MAX user accounts...")
     max_pool = MaxClientPool(config)
-    await max_pool.init(config.users)
+    await max_pool.init(users)
 
     bridge = Bridge(lookup, message_store, tg_pool, max_pool, mirror_tracker)
 
-    log.info("Starting Telegram listener...")
-    tg_listener = TelegramListener(config, lookup, mirror_tracker, bridge.handle_event)
-    await tg_listener.start()
+    log.info("Starting Telegram listeners...")
+    tg_listeners = []
+    for user in users:
+        client = tg_pool.get_client(user.telegram_user_id)
+        listener = TelegramListener(config, lookup, mirror_tracker, bridge.handle_event, client, user)
+        await listener.start()
+        tg_listeners.append(listener)
 
-    log.info("Starting MAX listener...")
-    max_listener = MaxListener(config, lookup, mirror_tracker, bridge.handle_event)
-    await max_listener.start()
+    log.info("Starting MAX listeners...")
+    max_listeners = []
+    for user in users:
+        listener = MaxListener(config, lookup, mirror_tracker, bridge.handle_event, user)
+        await listener.start()
+        max_listeners.append(listener)
 
-    log.info("Ready! Bridging messages between Telegram and MAX.")
-
-    log.info("Bridge is active. Monitoring:")
-    for pair in config.chat_pairs:
-        log.info("  [TG] %s  <->  [MAX] %s   (%s)",
-                 pair.telegram_chat_id, pair.max_chat_id, pair.name)
+    log.info("Bridge is active:")
+    for entry in config.bridges:
+        log.info("  [TG] %s  <->  [MAX] %s   (%s) via %s",
+                 entry.telegram_chat_id, entry.max_chat_id, entry.name, entry.user.name)
     log.info("Users:")
-    for user in config.users:
-        log.info("  %-12s  TG:%-15s  MAX:%s",
-                 user.name, user.telegram_user_id, user.max_user_id)
+    for user in users:
+        log.info("  %-12s  TG:%-15s  MAX:%s", user.name, user.telegram_user_id, user.max_user_id)
 
     shutdown_event = asyncio.Event()
 
@@ -85,8 +88,10 @@ async def main():
 
     await shutdown_event.wait()
 
-    await tg_listener.stop()
-    await max_listener.stop()
+    for listener in tg_listeners:
+        await listener.stop()
+    for listener in max_listeners:
+        await listener.stop()
     await tg_pool.stop()
     await max_pool.stop()
     message_store.stop()

@@ -7,7 +7,7 @@ from .patched_client import PatchedMaxClient
 
 from ..bridge.mirror_tracker import MirrorTracker
 from ..config import ConfigLookup
-from ..types import AppConfig, BridgeEvent, MediaInfo
+from ..types import AppConfig, BridgeEvent, MediaInfo, UserMapping
 from .session import MaxSession
 from .media import download_media
 
@@ -26,47 +26,39 @@ class MaxListener:
         lookup: ConfigLookup,
         mirror_tracker: MirrorTracker,
         on_event: Callable[[BridgeEvent], Awaitable[None]],
+        user: UserMapping,
     ):
         self.config = config
         self.lookup = lookup
         self.mirrors = mirror_tracker
         self.on_event = on_event
+        self.user = user
         self.client: MaxClient | None = None
-        self._my_user_id: int | None = None
+        self._my_user_id: int = user.max_user_id
         self._login_token: str | None = None
         self._stopped = False
         self._monitor_task: asyncio.Task | None = None
 
     async def start(self) -> int:
-        session = MaxSession(self.config.listener_max_session, self.config.sessions_dir)
+        session = MaxSession(self.user.max_session, self.config.sessions_dir)
         if not session.exists():
             raise RuntimeError(
-                f"MAX listener session not found ({self.config.listener_max_session}). "
+                f"MAX session not found ({self.user.max_session}) for user {self.user.name}. "
                 f"Run 'python -m src.auth' first."
             )
 
         self._login_token = session.load()
-        # Use stored user_id as fallback when server returns null on login
-        stored_user_id = session.load_user_id()
         await self._connect()
-
-        if not self._my_user_id and stored_user_id:
-            self._my_user_id = stored_user_id
-            log.info("Using stored user_id as fallback: %d", self._my_user_id)
 
         self._monitor_task = asyncio.create_task(self._reconnect_loop())
 
-        log.info("Started (User ID: %s)", self._my_user_id)
-        return self._my_user_id or 0
+        log.info("Started for %s (User ID: %d)", self.user.name, self._my_user_id)
+        return self._my_user_id
 
     async def _connect(self):
         self.client = PatchedMaxClient()
         await self.client.connect()
         login_response = await self.client.login_by_token(self._login_token)
-
-        if login_response and "payload" in login_response:
-            profile = login_response["payload"].get("profile", {})
-            self._my_user_id = profile.get("userId", 0)
 
         await self.client.set_callback(self._handle_packet)
 
@@ -89,7 +81,7 @@ class MaxListener:
             try:
                 await self._connect()
                 delay = RECONNECT_BASE_DELAY
-                log.info("Reconnected (User ID: %s)", self._my_user_id)
+                log.info("Reconnected (User ID: %d)", self._my_user_id)
             except Exception as e:
                 log.error("Reconnect failed: %s", e)
 
@@ -127,17 +119,20 @@ class MaxListener:
         message = payload.get("message", {})
         msg_id = str(message.get("id", ""))
 
-        if not chat_id:
+        log.debug("MAX msg: chat=%s sender=%s msg_id=%r text=%r attaches=%s",
+                  chat_id, sender_id, msg_id,
+                  (message.get("text") or "")[:60],
+                  [a.get("_type") for a in message.get("attaches", [])])
+
+        # sender_id is None when the MAX server delivers our own account's
+        # outgoing messages back to us — skip to prevent echo loops.
+        if not chat_id or not sender_id:
             return
 
-        if msg_id and self.mirrors.is_max_mirror(msg_id):
+        bridge_entry = self.lookup.get_bridge_by_max(chat_id, self._my_user_id)
+        if not bridge_entry:
             return
 
-        chat_pair = self.lookup.get_pair_by_max_chat(chat_id)
-        if not chat_pair:
-            return
-
-        user = self.lookup.get_user_by_max_id(sender_id) if sender_id else None
         sender_name = payload.get("senderName", "Unknown")
         text = message.get("text")
         attaches = message.get("attaches", [])
@@ -171,8 +166,7 @@ class MaxListener:
                 if media:
                     await self.on_event(BridgeEvent(
                         direction="max-to-tg",
-                        chat_pair=chat_pair,
-                        user=user,
+                        bridge_entry=bridge_entry,
                         sender_display_name=sender_name,
                         event_type=evt_type,
                         text=text,
@@ -184,8 +178,7 @@ class MaxListener:
                     label = att_type.capitalize()
                     await self.on_event(BridgeEvent(
                         direction="max-to-tg",
-                        chat_pair=chat_pair,
-                        user=user,
+                        bridge_entry=bridge_entry,
                         sender_display_name=sender_name,
                         event_type="text",
                         text=f"{text or ''}\n[{label} — media download failed]".strip(),
@@ -197,8 +190,7 @@ class MaxListener:
             if att_type == "STICKER":
                 await self.on_event(BridgeEvent(
                     direction="max-to-tg",
-                    chat_pair=chat_pair,
-                    user=user,
+                    bridge_entry=bridge_entry,
                     sender_display_name=sender_name,
                     event_type="sticker",
                     text="[Sticker]",
@@ -210,8 +202,7 @@ class MaxListener:
         if text:
             await self.on_event(BridgeEvent(
                 direction="max-to-tg",
-                chat_pair=chat_pair,
-                user=user,
+                bridge_entry=bridge_entry,
                 sender_display_name=sender_name,
                 event_type="text",
                 text=text,
@@ -232,17 +223,15 @@ class MaxListener:
         if self.mirrors.is_max_mirror(msg_id):
             return
 
-        chat_pair = self.lookup.get_pair_by_max_chat(chat_id)
-        if not chat_pair:
+        bridge_entry = self.lookup.get_bridge_by_max(chat_id, self._my_user_id)
+        if not bridge_entry:
             return
 
-        user = self.lookup.get_user_by_max_id(sender_id) if sender_id else None
         sender_name = payload.get("senderName", "Unknown")
 
         await self.on_event(BridgeEvent(
             direction="max-to-tg",
-            chat_pair=chat_pair,
-            user=user,
+            bridge_entry=bridge_entry,
             sender_display_name=sender_name,
             event_type="edit",
             text=text,
@@ -258,15 +247,14 @@ class MaxListener:
         if not chat_id:
             return
 
-        chat_pair = self.lookup.get_pair_by_max_chat(chat_id)
-        if not chat_pair:
+        bridge_entry = self.lookup.get_bridge_by_max(chat_id, self._my_user_id)
+        if not bridge_entry:
             return
 
         for mid in message_ids:
             await self.on_event(BridgeEvent(
                 direction="max-to-tg",
-                chat_pair=chat_pair,
-                user=None,
+                bridge_entry=bridge_entry,
                 sender_display_name="Unknown",
                 event_type="delete",
                 delete_source_msg_id=str(mid),
