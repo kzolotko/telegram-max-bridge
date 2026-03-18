@@ -1,8 +1,23 @@
-version: "3.8"
 services:
   bridge:
     build: .
+    image: telegram-max-bridge
+    container_name: telegram-max-bridge
     restart: unless-stopped
+
     volumes:
+      # config.yaml is read-only — edit it on the host, then restart the container
       - ./config.yaml:/app/config.yaml:ro
+      # sessions/ holds Pyrogram and MAX session files — must persist across restarts
       - ./sessions:/app/sessions
+
+    # Write logs to stdout (visible via `docker logs` or log driver)
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # Optional: override config path via environment variable
+    # environment:
+    #   - CONFIG_PATH=/app/config.yaml

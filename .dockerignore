@@ -1,9 +1,32 @@
+# Git
 .git
-.venv
-venv
-__pycache__
-*.pyc
+.gitignore
+
+# Secrets — never bake these into the image
 config.yaml
 sessions/
 *.session
+*.max_session
+
+# Python cache
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+
+# Docs
 *.md

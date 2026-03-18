@@ -208,31 +208,128 @@ python -m src.auth
 
 ## Шаг 4: Запуск
 
-### Напрямую (Python)
+### Вариант A — напрямую (Python)
 
 ```bash
 python -m src
 ```
 
-### Docker Compose
+---
 
-```bash
-# Собрать образ и запустить
-docker compose up -d
+### Вариант B — Docker
 
-# Просмотр логов
-docker compose logs -f
+#### Структура файлов на сервере
 
-# Остановка
-docker compose down
+```
+telegram-max-bridge/
+├── config.yaml          # ← создать вручную (не в репо)
+├── sessions/            # ← создать вручную, будет заполнена при авторизации
+│   ├── tg_listener.session
+│   ├── max_listener.max_session
+│   ├── tg_kzolotko.session
+│   └── max_kzolotko.max_session
+├── docker-compose.yml
+└── Dockerfile
 ```
 
-В `docker-compose.yml` уже настроены:
-- монтирование `config.yaml` (read-only)
-- монтирование директории `sessions/` (read-write для хранения сессий)
-- политика перезапуска `unless-stopped`
+#### Шаг 4.1 — Подготовка на сервере
 
-> При запуске через Docker авторизацию (`python -m src.auth`) необходимо выполнить **на хосте** (или в отдельном контейнере с интерактивным терминалом), так как ввод кода из SMS требует TTY.
+```bash
+# Клонировать репозиторий
+git clone git@github.com:kzolotko/telegram-max-bridge.git
+cd telegram-max-bridge
+
+# Создать папку для сессий
+mkdir -p sessions
+
+# Скопировать и заполнить конфиг
+cp config.example.yaml config.yaml
+nano config.yaml   # или любой другой редактор
+```
+
+#### Шаг 4.2 — Авторизация аккаунтов (интерактивно, до запуска контейнера)
+
+Авторизация требует ввода кода из SMS — её нельзя провести в фоновом контейнере.
+Запустите её в интерактивном режиме прямо на сервере:
+
+```bash
+# Установить зависимости локально (один раз)
+pip install -r requirements.txt
+
+# Авторизовать все аккаунты
+python -m src.auth
+```
+
+После успешной авторизации в папке `sessions/` появятся файлы `.session` и `.max_session`.
+
+> Если на сервере нет Python, можно авторизоваться локально на своей машине,
+> а затем скопировать папку `sessions/` на сервер через `scp`:
+> ```bash
+> scp -r sessions/ user@your-server:/path/to/telegram-max-bridge/
+> ```
+
+#### Шаг 4.3 — Сборка и запуск
+
+```bash
+# Собрать образ и запустить в фоне
+docker compose up -d --build
+
+# Проверить статус
+docker compose ps
+
+# Просмотр логов в реальном времени
+docker compose logs -f
+
+# Просмотр последних 100 строк лога
+docker compose logs --tail=100
+```
+
+#### Шаг 4.4 — Управление
+
+```bash
+# Остановить
+docker compose down
+
+# Перезапустить (например, после изменения config.yaml)
+docker compose restart
+
+# Полная пересборка (после обновления кода)
+git pull origin main
+docker compose up -d --build
+
+# Войти в контейнер для отладки
+docker compose exec bridge bash
+```
+
+#### Шаг 4.5 — Диагностика
+
+```bash
+# Запустить диагностику прямо в контейнере
+docker compose exec bridge python diagnose.py
+
+# Посмотреть потребление ресурсов
+docker stats telegram-max-bridge
+```
+
+#### Что монтируется в контейнер
+
+| Путь на хосте | Путь в контейнере | Режим |
+|---|---|---|
+| `./config.yaml` | `/app/config.yaml` | read-only |
+| `./sessions/` | `/app/sessions/` | read-write |
+
+> Файлы `config.yaml` и `sessions/` не хранятся внутри образа. Это значит:
+> - Пересборка образа (`--build`) не затрагивает сессии и конфиг.
+> - Образ безопасно пушить в registry — секреты в него не попадут.
+
+#### Автозапуск при перезагрузке сервера
+
+`docker-compose.yml` уже содержит `restart: unless-stopped` — контейнер автоматически поднимается после перезагрузки сервера при условии, что Docker daemon настроен на автозапуск:
+
+```bash
+# Убедиться, что Docker запускается автоматически (systemd)
+sudo systemctl enable docker
+```
 
 ---
 
