@@ -27,6 +27,7 @@ def setup_logging():
     )
     logging.getLogger("pyrogram").setLevel(logging.WARNING)
     logging.getLogger("websockets").setLevel(logging.WARNING)
+    logging.getLogger("vkmax").setLevel(logging.WARNING)
 
 
 async def main():
