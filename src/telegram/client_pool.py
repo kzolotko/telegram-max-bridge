@@ -1,7 +1,10 @@
-import os
+import logging
+
 from pyrogram import Client
 
 from ..types import AppConfig, UserMapping
+
+log = logging.getLogger("bridge.tg.pool")
 
 
 class TelegramClientPool:
@@ -27,7 +30,7 @@ class TelegramClientPool:
             self._clients[user.telegram_user_id] = client
             self._user_ids[user.telegram_session] = me.id
             user_ids.append(me.id)
-            print(f"[TG Pool] Started client for {user.name} (@{me.username}, ID: {me.id})")
+            log.info("Started client for %s (@%s, ID: %d)", user.name, me.username, me.id)
         return user_ids
 
     def get_client(self, tg_user_id: int) -> Client | None:
@@ -47,4 +50,4 @@ class TelegramClientPool:
             try:
                 await client.stop()
             except Exception as e:
-                print(f"[TG Pool] Error stopping client: {e}")
+                log.error("Error stopping client: %s", e)

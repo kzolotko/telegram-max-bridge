@@ -1,5 +1,8 @@
+import logging
 import time
 import asyncio
+
+log = logging.getLogger("bridge.store")
 
 
 class MessageStore:
@@ -51,4 +54,4 @@ class MessageStore:
                 else:
                     remaining.append((tg_key, max_key, ts))
             self._timestamps = remaining
-            print(f"[MessageStore] Cleanup: removed {removed}, kept {len(remaining)}")
+            log.debug("Cleanup: removed %d, kept %d", removed, len(remaining))

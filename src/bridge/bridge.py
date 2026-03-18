@@ -1,3 +1,6 @@
+import io
+import logging
+
 from ..config import ConfigLookup
 from ..message_store import MessageStore
 from ..telegram.client_pool import TelegramClientPool
@@ -5,7 +8,7 @@ from ..max.client_pool import MaxClientPool
 from ..types import BridgeEvent
 from .formatting import prepend_sender_name
 
-import io
+log = logging.getLogger("bridge.core")
 
 
 class Bridge:
@@ -28,7 +31,7 @@ class Bridge:
             else:
                 await self._max_to_tg(event)
         except Exception as e:
-            print(f"[Bridge] Error {event.direction} {event.event_type}: {e}")
+            log.error("Error %s %s: %s", event.direction, event.event_type, e)
 
     async def _tg_to_max(self, event: BridgeEvent):
         pair = event.chat_pair
@@ -49,12 +52,27 @@ class Bridge:
             if max_msg_id and event.source_msg_id is not None:
                 self.store.store(pair.name, int(event.source_msg_id), max_msg_id)
 
+        elif event.event_type == "photo" and event.media:
+            max_msg_id = await self.max_pool.send_photo(
+                max_user_id, max_chat_id, event.media.data,
+                event.media.filename, text, reply_to,
+            )
+            if max_msg_id and event.source_msg_id is not None:
+                self.store.store(pair.name, int(event.source_msg_id), max_msg_id)
+
+        elif event.event_type in ("video", "file", "audio") and event.media:
+            max_msg_id = await self.max_pool.send_file(
+                max_user_id, max_chat_id, event.media.data,
+                event.media.filename, event.media.mime_type, text, reply_to,
+            )
+            if max_msg_id and event.source_msg_id is not None:
+                self.store.store(pair.name, int(event.source_msg_id), max_msg_id)
+
         elif event.event_type in ("photo", "video", "file", "audio"):
-            # Media transfer to MAX not yet supported via vkmax; send text with note
-            media_text = f"{text}\n[{event.event_type.capitalize()} — media transfer to MAX not yet supported]".strip()
+            fallback_text = f"{text}\n[{event.event_type.capitalize()} — media download failed]".strip()
             if not event.user:
-                media_text = prepend_sender_name(event.sender_display_name, media_text)
-            max_msg_id = await self.max_pool.send_text(max_user_id, max_chat_id, media_text, reply_to)
+                fallback_text = prepend_sender_name(event.sender_display_name, fallback_text)
+            max_msg_id = await self.max_pool.send_text(max_user_id, max_chat_id, fallback_text, reply_to)
             if max_msg_id and event.source_msg_id is not None:
                 self.store.store(pair.name, int(event.source_msg_id), max_msg_id)
 
@@ -101,7 +119,7 @@ class Bridge:
                 text = prepend_sender_name(event.sender_display_name, text)
 
         if not client:
-            print(f"[Bridge] No TG client available for user {tg_user_id}")
+            log.warning("No TG client available for user %s", tg_user_id)
             return
 
         # Resolve reply target
@@ -114,6 +132,39 @@ class Bridge:
                 tg_chat_id, text,
                 reply_to_message_id=reply_to,
             )
+            if event.source_msg_id is not None:
+                self.store.store(pair.name, msg.id, str(event.source_msg_id))
+
+        elif event.event_type == "photo" and event.media:
+            caption = text if text else None
+            buf = io.BytesIO(event.media.data)
+            buf.name = event.media.filename
+            msg = await client.send_photo(
+                tg_chat_id, buf, caption=caption,
+                reply_to_message_id=reply_to,
+            )
+            if event.source_msg_id is not None:
+                self.store.store(pair.name, msg.id, str(event.source_msg_id))
+
+        elif event.event_type in ("video", "audio", "file") and event.media:
+            caption = text if text else None
+            buf = io.BytesIO(event.media.data)
+            buf.name = event.media.filename
+            send_fn = {
+                "video": client.send_video,
+                "audio": client.send_audio,
+                "file": client.send_document,
+            }[event.event_type]
+            msg = await send_fn(
+                tg_chat_id, buf, caption=caption,
+                reply_to_message_id=reply_to,
+            )
+            if event.source_msg_id is not None:
+                self.store.store(pair.name, msg.id, str(event.source_msg_id))
+
+        elif event.event_type in ("photo", "video", "audio", "file"):
+            fallback = f"{text}\n[{event.event_type.capitalize()} — media unavailable]".strip()
+            msg = await client.send_message(tg_chat_id, fallback, reply_to_message_id=reply_to)
             if event.source_msg_id is not None:
                 self.store.store(pair.name, msg.id, str(event.source_msg_id))
 

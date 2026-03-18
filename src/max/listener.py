@@ -1,11 +1,19 @@
+import asyncio
+import logging
+from typing import Callable, Awaitable
+
 from vkmax.client import MaxClient
 
 from ..bridge.echo_guard import EchoGuard
 from ..config import ConfigLookup
-from ..types import AppConfig, BridgeEvent
+from ..types import AppConfig, BridgeEvent, MediaInfo
 from .session import MaxSession
+from .media import download_media
 
-from typing import Callable, Awaitable
+log = logging.getLogger("bridge.max.listener")
+
+RECONNECT_BASE_DELAY = 2
+RECONNECT_MAX_DELAY = 60
 
 
 class MaxListener:
@@ -22,8 +30,11 @@ class MaxListener:
         self.lookup = lookup
         self.echo_guard = echo_guard
         self.on_event = on_event
-        self.client = MaxClient()
+        self.client: MaxClient | None = None
         self._my_user_id: int | None = None
+        self._login_token: str | None = None
+        self._stopped = False
+        self._monitor_task: asyncio.Task | None = None
 
     async def start(self) -> int:
         session = MaxSession(self.config.listener_max_session, self.config.sessions_dir)
@@ -33,37 +44,74 @@ class MaxListener:
                 f"Run 'python -m src.auth' first."
             )
 
-        login_token = session.load()
-        await self.client.connect()
-        login_response = await self.client.login_by_token(login_token)
+        self._login_token = session.load()
+        await self._connect()
 
-        # Extract user ID from login response
+        self._monitor_task = asyncio.create_task(self._reconnect_loop())
+
+        log.info("Started (User ID: %s)", self._my_user_id)
+        return self._my_user_id or 0
+
+    async def _connect(self):
+        self.client = MaxClient()
+        await self.client.connect()
+        login_response = await self.client.login_by_token(self._login_token)
+
         if login_response and "payload" in login_response:
             profile = login_response["payload"].get("profile", {})
             self._my_user_id = profile.get("userId", 0)
 
         await self.client.set_callback(self._handle_packet)
-        print(f"[MAX Listener] Started (User ID: {self._my_user_id})")
-        return self._my_user_id or 0
+
+    async def _reconnect_loop(self):
+        delay = RECONNECT_BASE_DELAY
+        while not self._stopped:
+            try:
+                if self.client and self.client._recv_task:
+                    await self.client._recv_task
+            except Exception:
+                pass
+
+            if self._stopped:
+                break
+
+            log.warning("Connection lost. Reconnecting in %ds...", delay)
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, RECONNECT_MAX_DELAY)
+
+            try:
+                await self._connect()
+                delay = RECONNECT_BASE_DELAY
+                log.info("Reconnected (User ID: %s)", self._my_user_id)
+            except Exception as e:
+                log.error("Reconnect failed: %s", e)
 
     async def stop(self):
-        try:
-            await self.client.disconnect()
-        except Exception:
-            pass
+        self._stopped = True
+        if self._monitor_task:
+            self._monitor_task.cancel()
+            try:
+                await self._monitor_task
+            except asyncio.CancelledError:
+                pass
+        if self.client:
+            try:
+                await self.client.disconnect()
+            except Exception:
+                pass
 
     async def _handle_packet(self, client: MaxClient, packet: dict):
         try:
             opcode = packet.get("opcode", 0)
 
-            if opcode == 128:  # Incoming message
+            if opcode == 128:
                 await self._handle_message(packet)
-            elif opcode == 67:  # Message edited
+            elif opcode == 67:
                 await self._handle_edited_message(packet)
-            elif opcode == 66:  # Message deleted
+            elif opcode == 66:
                 await self._handle_deleted_message(packet)
         except Exception as e:
-            print(f"[MAX Listener] Error handling packet (opcode={packet.get('opcode')}): {e}")
+            log.error("Error handling packet (opcode=%s): %s", packet.get("opcode"), e)
 
     async def _handle_message(self, packet: dict):
         payload = packet.get("payload", {})
@@ -87,28 +135,56 @@ class MaxListener:
         text = message.get("text")
         attaches = message.get("attaches", [])
 
-        # Check for reply
         reply_to = None
         link = message.get("link")
         if link and link.get("type") == "REPLY":
             reply_to = link.get("messageId")
 
-        # Handle attachments (media download not yet supported, send text placeholder)
         for att in attaches:
             att_type = att.get("_type", "")
 
             if att_type in ("PHOTO", "VIDEO", "FILE", "AUDIO"):
-                label = att_type.capitalize()
-                await self.on_event(BridgeEvent(
-                    direction="max-to-tg",
-                    chat_pair=chat_pair,
-                    user=user,
-                    sender_display_name=sender_name,
-                    event_type="text",
-                    text=f"{text or ''}\n[{label} — media transfer not yet supported]".strip(),
-                    reply_to_source_msg_id=reply_to,
-                    source_msg_id=msg_id,
-                ))
+                media_url = att.get("url")
+                media = None
+                if media_url:
+                    try:
+                        data = await download_media(media_url)
+                        event_type_map = {
+                            "PHOTO": ("photo", att.get("fileName", "photo.jpg"), "image/jpeg"),
+                            "VIDEO": ("video", att.get("fileName", "video.mp4"), "video/mp4"),
+                            "FILE": ("file", att.get("fileName", "file"), att.get("mimeType", "application/octet-stream")),
+                            "AUDIO": ("audio", att.get("fileName", "audio.mp3"), "audio/mpeg"),
+                        }
+                        evt_type, fname, mime = event_type_map[att_type]
+                        media = MediaInfo(data=data, filename=fname, mime_type=mime)
+                    except Exception as e:
+                        log.error("Failed to download %s: %s", att_type, e)
+                        evt_type = "text"
+
+                if media:
+                    await self.on_event(BridgeEvent(
+                        direction="max-to-tg",
+                        chat_pair=chat_pair,
+                        user=user,
+                        sender_display_name=sender_name,
+                        event_type=evt_type,
+                        text=text,
+                        media=media,
+                        reply_to_source_msg_id=reply_to,
+                        source_msg_id=msg_id,
+                    ))
+                else:
+                    label = att_type.capitalize()
+                    await self.on_event(BridgeEvent(
+                        direction="max-to-tg",
+                        chat_pair=chat_pair,
+                        user=user,
+                        sender_display_name=sender_name,
+                        event_type="text",
+                        text=f"{text or ''}\n[{label} — media download failed]".strip(),
+                        reply_to_source_msg_id=reply_to,
+                        source_msg_id=msg_id,
+                    ))
                 return
 
             if att_type == "STICKER":
@@ -124,7 +200,6 @@ class MaxListener:
                 ))
                 return
 
-        # Text-only message
         if text:
             await self.on_event(BridgeEvent(
                 direction="max-to-tg",
@@ -140,21 +215,28 @@ class MaxListener:
     async def _handle_edited_message(self, packet: dict):
         payload = packet.get("payload", {})
         chat_id = payload.get("chatId")
+        sender_id = payload.get("fromUserId")
         msg_id = str(payload.get("messageId", ""))
         text = payload.get("text")
 
         if not chat_id or not msg_id:
             return
 
+        if sender_id and self.echo_guard.is_managed_max_user(sender_id):
+            return
+
         chat_pair = self.lookup.get_pair_by_max_chat(chat_id)
         if not chat_pair:
             return
 
+        user = self.lookup.get_user_by_max_id(sender_id) if sender_id else None
+        sender_name = payload.get("senderName", "Unknown")
+
         await self.on_event(BridgeEvent(
             direction="max-to-tg",
             chat_pair=chat_pair,
-            user=None,
-            sender_display_name="Unknown",
+            user=user,
+            sender_display_name=sender_name,
             event_type="edit",
             text=text,
             edit_source_msg_id=msg_id,

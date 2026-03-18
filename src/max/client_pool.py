@@ -1,8 +1,17 @@
+import logging
+
 from vkmax.client import MaxClient
 from vkmax.functions.messages import send_message, reply_message, edit_message, delete_message
 
 from ..types import AppConfig, UserMapping
 from .session import MaxSession
+from .media import (
+    get_upload_url, upload_photo_to_url, send_photo_message,
+    get_file_upload_url, upload_file_to_url, send_file_message,
+)
+
+
+log = logging.getLogger("bridge.max.pool")
 
 
 class MaxClientPool:
@@ -32,7 +41,7 @@ class MaxClientPool:
             self._clients[user.max_user_id] = client
             user_ids.append(user.max_user_id)
             self._user_ids.append(user.max_user_id)
-            print(f"[MAX Pool] Started client for {user.name} (MAX ID: {user.max_user_id})")
+            log.info("Started client for %s (MAX ID: %d)", user.name, user.max_user_id)
 
         return user_ids
 
@@ -112,9 +121,56 @@ class MaxClientPool:
             message_ids=[message_id],
         )
 
+    async def send_photo(
+        self,
+        max_user_id: int | None,
+        chat_id: int,
+        photo_data: bytes,
+        filename: str = "photo.jpg",
+        caption: str = "",
+        reply_to: str | None = None,
+    ) -> str | None:
+        client = self._clients.get(max_user_id) if max_user_id else self.get_any_client()
+        if not client:
+            return None
+
+        upload_url = await get_upload_url(client)
+        photo_token = await upload_photo_to_url(upload_url, photo_data, filename)
+        response = await send_photo_message(client, chat_id, photo_token, caption, reply_to)
+
+        if response and "payload" in response:
+            msg_id = response["payload"].get("messageId")
+            if msg_id:
+                return str(msg_id)
+        return None
+
+    async def send_file(
+        self,
+        max_user_id: int | None,
+        chat_id: int,
+        file_data: bytes,
+        filename: str,
+        content_type: str = "application/octet-stream",
+        caption: str = "",
+        reply_to: str | None = None,
+    ) -> str | None:
+        client = self._clients.get(max_user_id) if max_user_id else self.get_any_client()
+        if not client:
+            return None
+
+        upload_url = await get_file_upload_url(client)
+        file_info = await upload_file_to_url(upload_url, file_data, filename, content_type)
+        response = await send_file_message(client, chat_id, file_info, caption, reply_to)
+
+        if response and "payload" in response:
+            msg_id = response["payload"].get("messageId")
+            if msg_id:
+                return str(msg_id)
+        return None
+
     async def stop(self):
         for client in self._clients.values():
             try:
                 await client.disconnect()
             except Exception as e:
-                print(f"[MAX Pool] Error disconnecting client: {e}")
+                log.error("Error disconnecting client: %s", e)

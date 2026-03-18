@@ -1,3 +1,6 @@
+import logging
+from typing import Callable, Awaitable
+
 from pyrogram import Client, filters
 from pyrogram.types import Message
 from pyrogram.handlers import MessageHandler, EditedMessageHandler, DeletedMessagesHandler
@@ -6,8 +9,7 @@ from ..bridge.echo_guard import EchoGuard
 from ..config import ConfigLookup
 from ..types import AppConfig, BridgeEvent, MediaInfo
 
-from typing import Callable, Awaitable
-import io
+log = logging.getLogger("bridge.tg.listener")
 
 
 class TelegramListener:
@@ -42,7 +44,7 @@ class TelegramListener:
 
         await self.client.start()
         me = await self.client.get_me()
-        print(f"[TG Listener] Started as @{me.username} (ID: {me.id})")
+        log.info("Started as @%s (ID: %d)", me.username, me.id)
         return me.id
 
     async def stop(self):
@@ -142,7 +144,7 @@ class TelegramListener:
                     source_msg_id=message.id,
                 ))
         except Exception as e:
-            print(f"[TG Listener] Error handling message: {e}")
+            log.error("Error handling message: %s", e)
 
     async def _handle_edited_message(self, client: Client, message: Message):
         try:
@@ -168,11 +170,15 @@ class TelegramListener:
                 source_msg_id=message.id,
             ))
         except Exception as e:
-            print(f"[TG Listener] Error handling edited message: {e}")
+            log.error("Error handling edited message: %s", e)
 
     async def _handle_deleted_messages(self, client: Client, messages: list[Message]):
         try:
             for message in messages:
+                # For group/private deletes Pyrogram sets chat=None (only
+                # channel deletes carry the channel_id).  Skip unknown chats.
+                if not message.chat:
+                    continue
                 chat_pair = self.lookup.get_pair_by_tg_chat(message.chat.id)
                 if not chat_pair:
                     continue
@@ -187,7 +193,7 @@ class TelegramListener:
                     source_msg_id=message.id,
                 ))
         except Exception as e:
-            print(f"[TG Listener] Error handling deleted messages: {e}")
+            log.error("Error handling deleted messages: %s", e)
 
     def _get_sender_name(self, message: Message) -> str:
         if message.from_user:
@@ -199,9 +205,11 @@ class TelegramListener:
 
     async def _download_media(self, message: Message) -> MediaInfo | None:
         try:
-            buf = io.BytesIO()
-            await self.client.download_media(message, in_memory=True, file_name=buf)
-            data = buf.getvalue()
+            # download_media with in_memory=True returns a BytesIO object directly.
+            result = await self.client.download_media(message, in_memory=True)
+            if not result:
+                return None
+            data = result.getvalue()
             if not data:
                 return None
 
@@ -226,5 +234,5 @@ class TelegramListener:
 
             return MediaInfo(data=data, filename=filename, mime_type=mime_type)
         except Exception as e:
-            print(f"[TG Listener] Failed to download media: {e}")
+            log.error("Failed to download media: %s", e)
             return None
