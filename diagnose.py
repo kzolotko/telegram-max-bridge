@@ -53,15 +53,35 @@ async def check_external_ip():
 
 # ── 2. WebSocket connection ───────────────────────────────────────────────────
 
+MAX_WS_URL  = "wss://ws-api.oneme.ru/websocket"
+MAX_WS_HOST = "ws-api.oneme.ru"
+MAX_WS_PORT = 443
+MAX_ORIGIN  = "https://web.max.ru"
+
+
 async def check_websocket():
     print(f"\n{SEP}")
     print("2. MAX WebSocket connection")
     print(SEP)
+    info(f"Target URL:  {MAX_WS_URL}")
+    info(f"Host:        {MAX_WS_HOST}")
+    info(f"Port:        {MAX_WS_PORT}  (TLS/WSS)")
+    info(f"Origin:      {MAX_ORIGIN}")
+
+    # Resolve IP
+    import socket
+    try:
+        resolved_ip = socket.gethostbyname(MAX_WS_HOST)
+        info(f"Resolved IP: {resolved_ip}")
+    except Exception as e:
+        fail(f"DNS resolution failed for {MAX_WS_HOST}: {e}")
+        return False
+
     try:
         import websockets
         async with websockets.connect(
-            "wss://ws-api.oneme.ru/websocket",
-            origin="https://web.max.ru",
+            MAX_WS_URL,
+            origin=MAX_ORIGIN,
             additional_headers={
                 "User-Agent": (
                     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
