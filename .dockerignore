@@ -30,6 +30,7 @@ Thumbs.db
 .claude/
 
 # Docs & utility scripts (not needed in container)
-*.md
+README.md
+TASKS.md
 diagnose.py
 extract_max_token.js
