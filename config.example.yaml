@@ -17,45 +17,56 @@ api_hash: "0123456789abcdef0123456789abcdef"
 
 # ─── Session storage ──────────────────────────────────────────────────────────
 # Directory for session files (relative to project root).
-# Session filenames are derived automatically:
+# Session filenames are derived automatically from user.name:
 #   Telegram → sessions/tg_{user.name}.session
 #   MAX      → sessions/max_{user.name}.max_session
 sessions_dir: "sessions"
 
-# ─── Bridge entries ───────────────────────────────────────────────────────────
-# Each entry connects one Telegram chat with one MAX chat via one user account.
-# That user's accounts handle both listening and mirroring in both directions.
-# Sender name is always prepended: "[Alice]: Hello"
+# ─── Bridge entries ────────────────────────────────────────────────────────────
+# Each entry connects one Telegram chat ↔ one MAX chat via one user's accounts.
 #
-# How to find IDs:
+# HOW MULTI-USER WORKS
+# ─────────────────────
+# When multiple users share the same chat pair, only the FIRST user listed
+# (the "primary") actively listens.  The bridge routes each message to the
+# correct sender's account on the other side:
 #
-#   telegram_chat_id  — forward any message from the group to @userinfobot,
-#                       it will reply with the chat ID (negative number).
-#                       For supergroups the ID starts with -100.
+#   • Alice writes in TG → mirrors via Alice's MAX account (no prefix)
+#   • Bob writes in TG   → mirrors via Bob's MAX account   (no prefix)
+#   • Charlie writes in TG (not configured) → mirrors via primary's MAX
+#     account with "[Charlie]: " prefix
 #
-#   max_chat_id       — open the chat at web.max.ru, the ID is in the URL:
-#                       https://web.max.ru/#/chats/@chat/-72099589405396
+# Every message is forwarded exactly once — no duplicates.
+#
+# HOW TO FIND IDs
+# ───────────────
+#   telegram_chat_id  — forward any message from the group to @userinfobot;
+#                       it replies with the chat ID (negative number).
+#                       Supergroups start with -100, regular groups don't.
+#
+#   max_chat_id       — open the chat at https://web.max.ru, the ID is in
+#                       the URL: web.max.ru/#/chats/@chat/-72099589405396
 #
 #   telegram_user_id  — message @userinfobot directly, it replies with your ID.
 #
-#   max_user_id       — visible in the output of `python -m src.auth` after
-#                       MAX login, or find viewerId at web.max.ru in your profile.
+#   max_user_id       — shown in `python -m src.auth` output after MAX login,
+#                       or find viewerId in browser dev tools at web.max.ru.
 #
-# user.name must be alphanumeric (letters and digits only) — it is used to
-# build session filenames (tg_alice.session, max_alice.max_session).
+# user.name must be alphanumeric — it is used to build session filenames
+# (e.g. tg_alice.session, max_alice.max_session).
 
 bridges:
-  # ── Minimal example: one chat, one user ─────────────────────────────────────
-  - name: "team-general"              # unique key used in logs and message store
+  # ── Minimal: one chat, one user ──────────────────────────────────────────────
+  - name: "team-general"              # unique key (for logs & message store)
     telegram_chat_id: -1001234567890  # Telegram group/supergroup ID
     max_chat_id: -72099000000001      # MAX chat ID
     user:
-      name: "alice"                   # short alphanumeric name
+      name: "alice"                   # alphanumeric, used in session filenames
       telegram_user_id: 111111111     # numeric Telegram user ID
       max_user_id: 205111111          # numeric MAX user ID
 
-  # ── Same user, second chat ───────────────────────────────────────────────────
-  # Alice's account will also bridge this chat pair.
+  # ── Same user, additional chat ───────────────────────────────────────────────
+  # Alice also bridges this second chat pair.
   # Session files are reused — no extra authentication needed.
   - name: "team-dev"
     telegram_chat_id: -1009876543210
@@ -65,9 +76,11 @@ bridges:
       telegram_user_id: 111111111
       max_user_id: 205111111
 
-  # ── Second user in the same chat ────────────────────────────────────────────
-  # Bob bridges the same team-general chat independently with his own accounts.
-  # Each user sees all messages from the other side and forwards them.
+  # ── Second user for the same chat (authorship-preserving) ────────────────────
+  # Alice is primary (listed first) — her accounts listen to the chat.
+  # When Bob writes in TG, the bridge sends via Bob's MAX account directly
+  # (no "[Bob]: " prefix — the message appears from Bob's name natively).
+  # When someone not listed writes, it goes through Alice's account with prefix.
   - name: "team-general"
     telegram_chat_id: -1001234567890
     max_chat_id: -72099000000001

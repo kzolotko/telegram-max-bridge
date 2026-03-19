@@ -52,12 +52,29 @@ def load_config(config_path: str | None = None) -> AppConfig:
 
 
 class ConfigLookup:
+    """Fast lookup tables for bridge routing.
+
+    When multiple users are configured for the same chat, only the first
+    user in config order (the *primary*) listens to that chat.  Other
+    users' accounts are only used for sending when they are the original
+    message author — this preserves authorship without duplicating
+    messages.
+    """
+
     def __init__(self, config: AppConfig):
         self.config = config
+
+        # ── per-sender lookup (all entries) ──────────────────────────────────
         # (tg_chat_id, tg_user_id) -> BridgeEntry
         self._by_tg: dict[tuple[int, int], BridgeEntry] = {}
         # (max_chat_id, max_user_id) -> BridgeEntry
         self._by_max: dict[tuple[int, int], BridgeEntry] = {}
+
+        # ── primary entry per chat (first in config wins) ───────────────────
+        self._primary_by_tg: dict[int, BridgeEntry] = {}
+        self._primary_by_max: dict[int, BridgeEntry] = {}
+
+        # ── listening assignments (only primary gets each chat) ─────────────
         # tg_user_id -> [tg_chat_id, ...]
         self._tg_chats_for_user: dict[int, list[int]] = {}
         # max_user_id -> [max_chat_id, ...]
@@ -67,14 +84,40 @@ class ConfigLookup:
             u = entry.user
             self._by_tg[(entry.telegram_chat_id, u.telegram_user_id)] = entry
             self._by_max[(entry.max_chat_id, u.max_user_id)] = entry
-            self._tg_chats_for_user.setdefault(u.telegram_user_id, []).append(entry.telegram_chat_id)
-            self._max_chats_for_user.setdefault(u.max_user_id, []).append(entry.max_chat_id)
+
+            # Assign listening responsibility to the first user per chat
+            if entry.telegram_chat_id not in self._primary_by_tg:
+                self._primary_by_tg[entry.telegram_chat_id] = entry
+                self._tg_chats_for_user.setdefault(u.telegram_user_id, []).append(
+                    entry.telegram_chat_id
+                )
+            if entry.max_chat_id not in self._primary_by_max:
+                self._primary_by_max[entry.max_chat_id] = entry
+                self._max_chats_for_user.setdefault(u.max_user_id, []).append(
+                    entry.max_chat_id
+                )
+
+    # ── sender-specific lookup ───────────────────────────────────────────────
 
     def get_bridge_by_tg(self, chat_id: int, tg_user_id: int) -> 'BridgeEntry | None':
+        """Find bridge entry for a specific TG sender (authorship routing)."""
         return self._by_tg.get((chat_id, tg_user_id))
 
     def get_bridge_by_max(self, chat_id: int, max_user_id: int) -> 'BridgeEntry | None':
+        """Find bridge entry for a specific MAX sender (authorship routing)."""
         return self._by_max.get((chat_id, max_user_id))
+
+    # ── primary entry per chat ───────────────────────────────────────────────
+
+    def get_primary_by_tg(self, chat_id: int) -> 'BridgeEntry | None':
+        """Primary bridge entry for a TG chat (first configured user)."""
+        return self._primary_by_tg.get(chat_id)
+
+    def get_primary_by_max(self, chat_id: int) -> 'BridgeEntry | None':
+        """Primary bridge entry for a MAX chat (first configured user)."""
+        return self._primary_by_max.get(chat_id)
+
+    # ── per-user chat lists (only chats where user is primary) ──────────────
 
     def get_tg_chat_ids_for_user(self, tg_user_id: int) -> list[int]:
         return self._tg_chats_for_user.get(tg_user_id, [])

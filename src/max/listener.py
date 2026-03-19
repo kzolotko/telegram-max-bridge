@@ -129,7 +129,13 @@ class MaxListener:
         if not chat_id or not sender_id:
             return
 
-        bridge_entry = self.lookup.get_bridge_by_max(chat_id, self._my_user_id)
+        # MirrorTracker: skip messages sent by the bridge via ANY user's
+        # MAX account (MAX message IDs are global — same for all users).
+        if msg_id and self.mirrors.is_max_mirror(msg_id):
+            log.debug("MAX msg %s → is mirror, skipping", msg_id)
+            return
+
+        bridge_entry = self.lookup.get_primary_by_max(chat_id)
         if not bridge_entry:
             return
 
@@ -168,6 +174,7 @@ class MaxListener:
                         direction="max-to-tg",
                         bridge_entry=bridge_entry,
                         sender_display_name=sender_name,
+                        sender_user_id=sender_id,
                         event_type=evt_type,
                         text=text,
                         media=media,
@@ -180,6 +187,7 @@ class MaxListener:
                         direction="max-to-tg",
                         bridge_entry=bridge_entry,
                         sender_display_name=sender_name,
+                        sender_user_id=sender_id,
                         event_type="text",
                         text=f"{text or ''}\n[{label} — media download failed]".strip(),
                         reply_to_source_msg_id=reply_to,
@@ -192,6 +200,7 @@ class MaxListener:
                     direction="max-to-tg",
                     bridge_entry=bridge_entry,
                     sender_display_name=sender_name,
+                    sender_user_id=sender_id,
                     event_type="sticker",
                     text="[Sticker]",
                     reply_to_source_msg_id=reply_to,
@@ -204,6 +213,7 @@ class MaxListener:
                 direction="max-to-tg",
                 bridge_entry=bridge_entry,
                 sender_display_name=sender_name,
+                sender_user_id=sender_id,
                 event_type="text",
                 text=text,
                 reply_to_source_msg_id=reply_to,
@@ -223,16 +233,18 @@ class MaxListener:
         if self.mirrors.is_max_mirror(msg_id):
             return
 
-        bridge_entry = self.lookup.get_bridge_by_max(chat_id, self._my_user_id)
+        bridge_entry = self.lookup.get_primary_by_max(chat_id)
         if not bridge_entry:
             return
 
+        sender_id = payload.get("fromUserId")
         sender_name = payload.get("senderName", "Unknown")
 
         await self.on_event(BridgeEvent(
             direction="max-to-tg",
             bridge_entry=bridge_entry,
             sender_display_name=sender_name,
+            sender_user_id=sender_id,
             event_type="edit",
             text=text,
             edit_source_msg_id=msg_id,
@@ -247,7 +259,7 @@ class MaxListener:
         if not chat_id:
             return
 
-        bridge_entry = self.lookup.get_bridge_by_max(chat_id, self._my_user_id)
+        bridge_entry = self.lookup.get_primary_by_max(chat_id)
         if not bridge_entry:
             return
 

@@ -48,6 +48,7 @@ class BridgeEvent:
     bridge_entry: BridgeEntry
     sender_display_name: str
     event_type: str  # 'text', 'photo', 'video', 'file', 'audio', 'sticker', 'edit', 'delete'
+    sender_user_id: Optional[int] = None  # TG user ID or MAX user ID of the original sender
     text: Optional[str] = None
     media: Optional[MediaInfo] = None
     reply_to_source_msg_id: Optional[int | str] = None

@@ -5,6 +5,7 @@ from pyrogram import Client, filters
 from pyrogram.types import Message
 from pyrogram.handlers import MessageHandler, EditedMessageHandler, DeletedMessagesHandler
 
+from ..bridge.formatting import MIRROR_MARKER
 from ..bridge.mirror_tracker import MirrorTracker
 from ..config import ConfigLookup
 from ..types import AppConfig, BridgeEvent, MediaInfo, UserMapping
@@ -52,15 +53,24 @@ class TelegramListener:
 
     async def _handle_message(self, client: Client, message: Message):
         try:
+            # MirrorTracker check (works reliably for supergroups)
             if self.mirrors.is_tg_mirror(message.id):
-                log.debug("TG msg %s → is mirror, skipping", message.id)
+                log.debug("TG msg %s → is mirror (tracker), skipping", message.id)
                 return
 
-            bridge_entry = self.lookup.get_bridge_by_tg(message.chat.id, self.user.telegram_user_id)
+            # MIRROR_MARKER check (works for regular groups where msg IDs
+            # differ per user — the marker is embedded in the text itself)
+            msg_text = message.text or message.caption or ""
+            if msg_text.startswith(MIRROR_MARKER):
+                log.debug("TG msg %s → has mirror marker, skipping", message.id)
+                return
+
+            bridge_entry = self.lookup.get_primary_by_tg(message.chat.id)
             if not bridge_entry:
                 return
 
             sender_name = self._get_sender_name(message)
+            sender_id = message.from_user.id if message.from_user else None
 
             reply_to = None
             if message.reply_to_message:
@@ -72,6 +82,7 @@ class TelegramListener:
                     direction="tg-to-max",
                     bridge_entry=bridge_entry,
                     sender_display_name=sender_name,
+                    sender_user_id=sender_id,
                     event_type="photo",
                     text=message.caption,
                     media=media,
@@ -84,6 +95,7 @@ class TelegramListener:
                     direction="tg-to-max",
                     bridge_entry=bridge_entry,
                     sender_display_name=sender_name,
+                    sender_user_id=sender_id,
                     event_type="video",
                     text=message.caption,
                     media=media,
@@ -98,6 +110,7 @@ class TelegramListener:
                     direction="tg-to-max",
                     bridge_entry=bridge_entry,
                     sender_display_name=sender_name,
+                    sender_user_id=sender_id,
                     event_type="file",
                     text=message.caption,
                     media=media,
@@ -110,6 +123,7 @@ class TelegramListener:
                     direction="tg-to-max",
                     bridge_entry=bridge_entry,
                     sender_display_name=sender_name,
+                    sender_user_id=sender_id,
                     event_type="audio",
                     text=message.caption,
                     media=media,
@@ -121,6 +135,7 @@ class TelegramListener:
                     direction="tg-to-max",
                     bridge_entry=bridge_entry,
                     sender_display_name=sender_name,
+                    sender_user_id=sender_id,
                     event_type="sticker",
                     text=f"[Sticker: {message.sticker.emoji or ''}]",
                     reply_to_source_msg_id=reply_to,
@@ -131,6 +146,7 @@ class TelegramListener:
                     direction="tg-to-max",
                     bridge_entry=bridge_entry,
                     sender_display_name=sender_name,
+                    sender_user_id=sender_id,
                     event_type="text",
                     text=message.text,
                     reply_to_source_msg_id=reply_to,
@@ -144,16 +160,22 @@ class TelegramListener:
             if self.mirrors.is_tg_mirror(message.id):
                 return
 
-            bridge_entry = self.lookup.get_bridge_by_tg(message.chat.id, self.user.telegram_user_id)
+            msg_text = message.text or message.caption or ""
+            if msg_text.startswith(MIRROR_MARKER):
+                return
+
+            bridge_entry = self.lookup.get_primary_by_tg(message.chat.id)
             if not bridge_entry:
                 return
 
             sender_name = self._get_sender_name(message)
+            sender_id = message.from_user.id if message.from_user else None
 
             await self.on_event(BridgeEvent(
                 direction="tg-to-max",
                 bridge_entry=bridge_entry,
                 sender_display_name=sender_name,
+                sender_user_id=sender_id,
                 event_type="edit",
                 text=message.text or message.caption,
                 edit_source_msg_id=message.id,
@@ -165,11 +187,9 @@ class TelegramListener:
     async def _handle_deleted_messages(self, client: Client, messages: list[Message]):
         try:
             for message in messages:
-                # For group/private deletes Pyrogram sets chat=None (only
-                # channel deletes carry the channel_id).  Skip unknown chats.
                 if not message.chat:
                     continue
-                bridge_entry = self.lookup.get_bridge_by_tg(message.chat.id, self.user.telegram_user_id)
+                bridge_entry = self.lookup.get_primary_by_tg(message.chat.id)
                 if not bridge_entry:
                     continue
 
