@@ -57,6 +57,24 @@ class MaxClientPool:
     def get_all_user_ids(self) -> list[int]:
         return list(self._user_ids)
 
+    @staticmethod
+    def _extract_msg_id(response: dict | None) -> str | None:
+        """Extract message ID from MAX API response.
+
+        The ID can appear in two places depending on the endpoint:
+          - payload.messageId  (some endpoints)
+          - payload.message.id (send_message / reply_message)
+        """
+        if not response or "payload" not in response:
+            return None
+        payload = response["payload"]
+        msg_id = payload.get("messageId")
+        if not msg_id:
+            msg = payload.get("message")
+            if isinstance(msg, dict):
+                msg_id = msg.get("id")
+        return str(msg_id) if msg_id else None
+
     async def send_text(
         self,
         max_user_id: int | None,
@@ -82,11 +100,7 @@ class MaxClientPool:
                 text=text,
             )
 
-        if response and "payload" in response:
-            msg_id = response["payload"].get("messageId")
-            if msg_id:
-                return str(msg_id)
-        return None
+        return self._extract_msg_id(response)
 
     async def edit_text(
         self,
@@ -138,12 +152,7 @@ class MaxClientPool:
         upload_url = await get_upload_url(client)
         photo_token = await upload_photo_to_url(upload_url, photo_data, filename)
         response = await send_photo_message(client, chat_id, photo_token, caption, reply_to)
-
-        if response and "payload" in response:
-            msg_id = response["payload"].get("messageId")
-            if msg_id:
-                return str(msg_id)
-        return None
+        return self._extract_msg_id(response)
 
     async def send_file(
         self,
@@ -162,12 +171,7 @@ class MaxClientPool:
         upload_url = await get_file_upload_url(client)
         file_info = await upload_file_to_url(upload_url, file_data, filename, content_type)
         response = await send_file_message(client, chat_id, file_info, caption, reply_to)
-
-        if response and "payload" in response:
-            msg_id = response["payload"].get("messageId")
-            if msg_id:
-                return str(msg_id)
-        return None
+        return self._extract_msg_id(response)
 
     async def stop(self):
         for client in self._clients.values():

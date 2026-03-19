@@ -53,6 +53,21 @@ async def main():
 
     bridge = Bridge(lookup, message_store, tg_pool, max_pool, mirror_tracker)
 
+    # Warm up Pyrogram peer cache by loading dialogs — ensures all chats
+    # the user participates in are resolvable for MAX→TG sends.
+    log.info("Loading Telegram dialogs (peer cache warm-up)...")
+    warmed_users: set[int] = set()
+    for user in users:
+        if user.telegram_user_id in warmed_users:
+            continue
+        client = tg_pool.get_client(user.telegram_user_id)
+        if client:
+            count = 0
+            async for dialog in client.get_dialogs():
+                count += 1
+            log.info("  %s: cached %d dialogs", user.name, count)
+            warmed_users.add(user.telegram_user_id)
+
     log.info("Starting Telegram listeners...")
     tg_listeners = []
     for user in users:

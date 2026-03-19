@@ -38,6 +38,7 @@ class MaxListener:
         self._login_token: str | None = None
         self._stopped = False
         self._monitor_task: asyncio.Task | None = None
+        self._name_cache: dict[int, str] = {}  # max_user_id -> display name
 
     async def start(self) -> int:
         session = MaxSession(self.user.max_session, self.config.sessions_dir)
@@ -99,6 +100,32 @@ class MaxListener:
             except Exception:
                 pass
 
+    async def _resolve_sender_name(self, sender_id: int) -> str:
+        """Resolve display name for a MAX user ID, with caching."""
+        if sender_id in self._name_cache:
+            return self._name_cache[sender_id]
+        try:
+            from vkmax.functions.users import resolve_users
+            resp = await resolve_users(self.client, [sender_id])
+            contacts = resp.get("payload", {}).get("contacts", [])
+            if contacts:
+                c = contacts[0]
+                # names[] contains variants; first entry is preferred (CUSTOM > ONEME)
+                names = c.get("names", [])
+                name = None
+                if names:
+                    name = names[0].get("name") or names[0].get("firstName")
+                if not name:
+                    name = c.get("displayName") or c.get("firstName")
+                if name:
+                    self._name_cache[sender_id] = name
+                    return name
+        except Exception as e:
+            log.warning("Could not resolve MAX user %s: %s", sender_id, e)
+        fallback = f"User:{sender_id}"
+        self._name_cache[sender_id] = fallback
+        return fallback
+
     async def _handle_packet(self, client: MaxClient, packet: dict):
         try:
             opcode = packet.get("opcode", 0)
@@ -115,17 +142,16 @@ class MaxListener:
     async def _handle_message(self, packet: dict):
         payload = packet.get("payload", {})
         chat_id = payload.get("chatId")
-        sender_id = payload.get("fromUserId")
         message = payload.get("message", {})
         msg_id = str(message.get("id", ""))
+        # Sender ID lives in message.sender (opcode 128), NOT payload.fromUserId
+        sender_id = message.get("sender") or payload.get("fromUserId")
 
         log.debug("MAX msg: chat=%s sender=%s msg_id=%r text=%r attaches=%s",
                   chat_id, sender_id, msg_id,
                   (message.get("text") or "")[:60],
                   [a.get("_type") for a in message.get("attaches", [])])
 
-        # sender_id is None when the MAX server delivers our own account's
-        # outgoing messages back to us — skip to prevent echo loops.
         if not chat_id or not sender_id:
             return
 
@@ -139,7 +165,7 @@ class MaxListener:
         if not bridge_entry:
             return
 
-        sender_name = payload.get("senderName", "Unknown")
+        sender_name = await self._resolve_sender_name(sender_id)
         text = message.get("text")
         attaches = message.get("attaches", [])
 
