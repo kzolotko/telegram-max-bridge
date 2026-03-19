@@ -57,7 +57,7 @@ class Bridge:
         else:
             # Unknown sender — use primary's MAX account with [Name]: prefix.
             max_user_id = entry.user.max_user_id
-            text = prepend_sender_name(event.sender_display_name, event.text or "") if event.text else ""
+            text = prepend_sender_name(event.sender_display_name, event.text or "")
             log.debug("tg→max (primary=%s) type=%s text=%r",
                       entry.user.name, event.event_type, text[:50])
 
@@ -210,7 +210,9 @@ class Bridge:
             self.mirrors.mark_tg(msg.id)
 
         elif event.event_type == "sticker":
-            sticker_text = text or "[Sticker]"
+            sticker_text = event.text or "[Sticker]"
+            if not sender_entry:
+                sticker_text = prepend_sender_name(event.sender_display_name, sticker_text)
             msg = await client.send_message(
                 tg_chat_id, MIRROR_MARKER + sticker_text,
                 reply_to_message_id=reply_to,

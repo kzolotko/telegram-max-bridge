@@ -10,3 +10,4 @@ sessions/
 *.log
 .DS_Store
 .env
+.claude/

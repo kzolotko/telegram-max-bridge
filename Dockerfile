@@ -14,7 +14,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application source
 COPY src/ ./src/
-COPY diagnose.py ./
 
 # Sessions directory is mounted at runtime — never baked into the image
 VOLUME ["/app/sessions"]

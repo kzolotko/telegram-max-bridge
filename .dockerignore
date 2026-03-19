@@ -27,6 +27,9 @@ Thumbs.db
 # IDE
 .idea/
 .vscode/
+.claude/
 
-# Docs
+# Docs & utility scripts (not needed in container)
 *.md
+diagnose.py
+extract_max_token.js

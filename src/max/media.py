@@ -20,6 +20,7 @@ UPLOAD_HEADERS = {
         "Chrome/137.0.0.0 Safari/537.36"
     ),
     "Accept": "*/*",
+    "Accept-Encoding": "gzip, deflate",
     "Origin": "https://web.max.ru",
     "Referer": "https://web.max.ru/",
     "Sec-Fetch-Site": "cross-site",

@@ -136,8 +136,10 @@ class MaxListener:
                 await self._handle_edited_message(packet)
             elif opcode == 66:
                 await self._handle_deleted_message(packet)
+            elif opcode not in (0, 1, 2, 3, 4, 5, 130, 132):
+                log.debug("Unhandled opcode: %s", opcode)
         except Exception as e:
-            log.error("Error handling packet (opcode=%s): %s", packet.get("opcode"), e)
+            log.error("Error handling packet (opcode=%s): %s", packet.get("opcode"), e, exc_info=True)
 
     async def _handle_message(self, packet: dict):
         payload = packet.get("payload", {})
@@ -172,13 +174,25 @@ class MaxListener:
         reply_to = None
         link = message.get("link")
         if link and link.get("type") == "REPLY":
+            # Reply target ID can be in link.messageId or link.message.id
             reply_to = link.get("messageId")
+            if not reply_to:
+                link_msg = link.get("message")
+                if isinstance(link_msg, dict):
+                    reply_to = link_msg.get("id")
+            if reply_to:
+                reply_to = str(reply_to)
+                log.debug("MAX reply_to: %s", reply_to)
 
         for att in attaches:
             att_type = att.get("_type", "")
 
             if att_type in ("PHOTO", "VIDEO", "FILE", "AUDIO"):
                 media_url = att.get("url")
+                # PHOTO attachments use baseUrl (full CDN link) instead of url
+                if not media_url:
+                    media_url = att.get("baseUrl")
+                log.debug("MAX attachment: type=%s url=%s keys=%s", att_type, media_url, list(att.keys()))
                 media = None
                 if media_url:
                     try:
@@ -192,7 +206,7 @@ class MaxListener:
                         evt_type, fname, mime = event_type_map[att_type]
                         media = MediaInfo(data=data, filename=fname, mime_type=mime)
                     except Exception as e:
-                        log.error("Failed to download %s: %s", att_type, e)
+                        log.error("Failed to download %s from %s: %s", att_type, media_url, e, exc_info=True)
                         evt_type = "text"
 
                 if media:
@@ -263,7 +277,6 @@ class MaxListener:
         if not bridge_entry:
             return
 
-        sender_id = payload.get("fromUserId")
         sender_name = payload.get("senderName", "Unknown")
 
         await self.on_event(BridgeEvent(
@@ -281,7 +294,6 @@ class MaxListener:
         payload = packet.get("payload", {})
         chat_id = payload.get("chatId")
         message_ids = payload.get("messageIds", [])
-
         if not chat_id:
             return
 
