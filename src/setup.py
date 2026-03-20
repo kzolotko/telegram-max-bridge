@@ -199,14 +199,6 @@ async def _do_max_auth(name: str, sessions_dir: str) -> int:
     max_client = PatchedMaxClient()
     await max_client.connect()
 
-    hello = await max_client._send_hello_packet()
-    if not hello.get("payload", {}).get("phone-auth-enabled", True):
-        location = hello.get("payload", {}).get("location", "?")
-        await max_client._connection.close()
-        print(f"  ❌ MAX phone auth is disabled from your location ({location}).")
-        print("     Disable VPN or use a Russian IP and re-run.")
-        sys.exit(1)
-
     phone = prompt("MAX phone number (e.g. +79991234567)")
     try:
         sms_token = await max_client.send_code(phone)
