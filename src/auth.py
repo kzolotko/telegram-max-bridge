@@ -103,7 +103,16 @@ async def auth_max(session_name: str, sessions_dir: str):
     account_data = await client.sign_in(sms_token, code)
 
     login_token = account_data["payload"]["tokenAttrs"]["LOGIN"]["token"]
-    session.save(login_token)
+    profile = account_data["payload"].get("profile", {})
+    user_id = (
+        profile.get("userId")
+        or profile.get("id")
+        or profile.get("sn")
+    )
+    if user_id:
+        user_id = int(user_id)
+        print(f"  MAX user ID: {user_id}")
+    session.save(login_token, user_id=user_id)
 
     print(f"  MAX session saved as '{session_name}'.")
     await client.disconnect()
