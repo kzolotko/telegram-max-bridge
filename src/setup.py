@@ -179,8 +179,16 @@ async def auth_one_user(
             await max_client.disconnect()
             print(f"  ✅ MAX: session valid (ID: {max_user_id})")
         except Exception as e:
-            print(f"  Session expired ({e}). Re-authenticating...")
-            max_user_id = await _do_max_auth(name, sessions_dir)
+            print(f"  ⚠️  MAX session verification failed: {e}")
+            print("  Options:")
+            print("    1. Keep existing session (skip re-auth, use it as-is)")
+            print("    2. Re-authenticate via phone+SMS")
+            choice = prompt("Choose [1/2]", default="1")
+            if choice == "2":
+                max_user_id = await _do_max_auth(name, sessions_dir)
+            else:
+                max_user_id = max_session.load_user_id()
+                print(f"  Using existing session. Stored user ID: {max_user_id}")
     else:
         max_user_id = await _do_max_auth(name, sessions_dir)
 
