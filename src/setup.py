@@ -210,6 +210,14 @@ async def _do_max_auth(name: str, sessions_dir: str) -> int:
     phone = prompt("MAX phone number (e.g. +79991234567)")
     try:
         sms_token = await max_client.send_code(phone)
+    except KeyError:
+        await max_client._connection.close()
+        raise RuntimeError(
+            "MAX server rejected the auth request (auth.request.forbidden).\n"
+            "  This usually means too many recent auth attempts — wait 10–15 minutes and retry.\n"
+            "  If you already have a working session from before, run: python -m src.auth\n"
+            "  (it will verify the existing session and skip re-authentication if it's still valid)."
+        )
     except Exception as e:
         await max_client._connection.close()
         raise RuntimeError(f"Failed to send MAX SMS code: {e}")
