@@ -355,13 +355,11 @@ def write_config(
     api_id: int,
     api_hash: str,
     bridges: list[dict],
-    sessions_dir: str,
     output_path: str = "config.yaml",
 ):
     config = {
         "api_id": api_id,
         "api_hash": api_hash,
-        "sessions_dir": sessions_dir,
         "bridges": [],
     }
 
@@ -437,7 +435,7 @@ async def main():
 
     # Step 4
     print_section("Step 4: Writing config.yaml")
-    write_config(api_id, api_hash, bridges, sessions_dir, output_path)
+    write_config(api_id, api_hash, bridges, output_path)
 
     print()
     print("=" * 60)

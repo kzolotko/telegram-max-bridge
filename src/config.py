@@ -47,7 +47,6 @@ def load_config(config_path: str | None = None) -> AppConfig:
         api_id=raw["api_id"],
         api_hash=raw["api_hash"],
         bridges=bridges,
-        sessions_dir=raw.get("sessions_dir", "sessions"),
     )
 
 

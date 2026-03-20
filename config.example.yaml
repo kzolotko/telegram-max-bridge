@@ -15,13 +15,6 @@
 api_id: 12345678
 api_hash: "0123456789abcdef0123456789abcdef"
 
-# ─── Session storage ──────────────────────────────────────────────────────────
-# Directory for session files (relative to project root).
-# Session filenames are derived automatically from user.name:
-#   Telegram → sessions/tg_{user.name}.session
-#   MAX      → sessions/max_{user.name}.max_session
-sessions_dir: "sessions"
-
 # ─── Bridge entries ────────────────────────────────────────────────────────────
 # Each entry connects one Telegram chat ↔ one MAX chat via one user's accounts.
 #

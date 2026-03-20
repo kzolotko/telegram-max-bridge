@@ -147,8 +147,6 @@ cp config.example.yaml config.yaml
 api_id: 12345678
 api_hash: "0123456789abcdef0123456789abcdef"
 
-sessions_dir: "sessions"   # необязательно, по умолчанию "sessions"
-
 bridges:
   - name: "team-general"           # произвольное название (используется в логах)
     telegram_chat_id: -1001234567  # ID группы в Telegram (отрицательное число)
