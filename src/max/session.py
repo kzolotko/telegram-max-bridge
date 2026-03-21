@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 
 
@@ -12,7 +13,7 @@ class MaxSession:
         return self.path.exists()
 
     def _read(self) -> dict:
-        return json.loads(self.path.read_text())
+        return json.loads(self.path.read_text(encoding="utf-8"))
 
     def load(self) -> str:
         """Returns login_token."""
@@ -34,4 +35,11 @@ class MaxSession:
             payload["user_id"] = user_id
         if device_id is not None:
             payload["device_id"] = device_id
-        self.path.write_text(json.dumps(payload))
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+        fd = os.open(self.path, flags, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+        try:
+            os.chmod(self.path, 0o600)
+        except OSError:
+            pass

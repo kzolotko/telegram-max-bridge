@@ -57,7 +57,18 @@ def load_config(
                 "Run 'python -m src.setup credentials' to set up Telegram API credentials."
             )
 
+    def _to_int(value, field_name: str, idx: int) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"bridges[{idx}].{field_name} must be an integer, got {value!r}"
+            ) from None
+
     bridges = []
+    # Allow duplicate bridge names only for the same chat pair (multi-user mode).
+    # Reusing the same name for different pairs is ambiguous and error-prone.
+    bridge_name_pairs: dict[str, tuple[int, int]] = {}
     for i, b in enumerate(raw.get("bridges", [])):
         for field in ("name", "telegram_chat_id", "max_chat_id"):
             if not b.get(field):
@@ -66,15 +77,32 @@ def load_config(
         for field in ("name", "telegram_user_id", "max_user_id"):
             if not u.get(field):
                 raise ValueError(f"bridges[{i}].user.{field} is required")
+        tg_chat_id = _to_int(b["telegram_chat_id"], "telegram_chat_id", i)
+        max_chat_id = _to_int(b["max_chat_id"], "max_chat_id", i)
+        tg_user_id = _to_int(u["telegram_user_id"], "user.telegram_user_id", i)
+        max_user_id = _to_int(u["max_user_id"], "user.max_user_id", i)
+
+        pair = (tg_chat_id, max_chat_id)
+        name = str(b["name"])
+        prev_pair = bridge_name_pairs.get(name)
+        if prev_pair is None:
+            bridge_name_pairs[name] = pair
+        elif prev_pair != pair:
+            raise ValueError(
+                f"Bridge name {name!r} is reused for different chat pairs: "
+                f"{prev_pair} and {pair}. "
+                "Use unique names per chat pair."
+            )
+
         user = UserMapping(
-            name=u["name"],
-            telegram_user_id=u["telegram_user_id"],
-            max_user_id=u["max_user_id"],
+            name=str(u["name"]),
+            telegram_user_id=tg_user_id,
+            max_user_id=max_user_id,
         )
         bridges.append(BridgeEntry(
-            name=b["name"],
-            telegram_chat_id=b["telegram_chat_id"],
-            max_chat_id=b["max_chat_id"],
+            name=name,
+            telegram_chat_id=tg_chat_id,
+            max_chat_id=max_chat_id,
             user=user,
         ))
 

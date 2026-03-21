@@ -11,6 +11,7 @@ Usage: python -m src.setup [credentials|bridges]
 
 import asyncio
 import logging
+import os
 import re
 import sys
 from pathlib import Path
@@ -50,6 +51,16 @@ def prompt(label: str, default: str | None = None) -> str:
 def confirm(question: str) -> bool:
     answer = input(f"  {question} [y/N]: ").strip().lower()
     return answer in ("y", "yes", "д", "да")
+
+
+def prompt_int(label: str, default: int | None = None) -> int:
+    default_str = str(default) if default is not None else None
+    while True:
+        raw = prompt(label, default=default_str)
+        try:
+            return int(raw)
+        except ValueError:
+            print("  Enter a numeric value")
 
 
 def print_section(title: str):
@@ -103,6 +114,10 @@ async def setup_credentials():
         "# This file is created by: python -m src.setup credentials\n"
         + yaml.dump(creds, default_flow_style=False)
     )
+    try:
+        os.chmod(creds_path, 0o600)
+    except OSError:
+        pass
     print(f"\n  ✅ Credentials saved to {CREDENTIALS_FILE}")
 
 
@@ -221,6 +236,9 @@ async def setup_bridges():
     # Configure new bridges
     new_bridges = await collect_bridges(users, api_id, api_hash, SESSIONS_DIR)
     all_bridges = existing_bridges + new_bridges
+    if not all_bridges:
+        print("\n  ⚠️  No bridges configured. config.yaml was not changed.")
+        return
 
     # Write config.yaml
     print_section("Writing config.yaml")
@@ -314,6 +332,7 @@ async def _verify_tg_membership(
     chat_id: int,
 ) -> bool:
     """Check if user is a member of the Telegram chat. Returns True if OK."""
+    tg_client = None
     try:
         tg_client = Client(
             name=f"tg_{user_name}",
@@ -327,12 +346,17 @@ async def _verify_tg_membership(
         async for _ in tg_client.get_dialogs():
             pass
         chat = await tg_client.get_chat(chat_id)
-        await tg_client.stop()
         print(f"  ✅ Telegram: {user_name} is a member of '{chat.title}'")
         return True
     except Exception as e:
         print(f"  ❌ Telegram: {user_name} is NOT a member of chat {chat_id} ({e})")
         return False
+    finally:
+        if tg_client is not None:
+            try:
+                await tg_client.stop()
+            except Exception:
+                pass
 
 
 async def _verify_max_membership(
@@ -341,6 +365,7 @@ async def _verify_max_membership(
     chat_id: int,
 ) -> bool:
     """Check if user is a member of the MAX chat. Returns True if OK."""
+    max_client = None
     try:
         max_session = MaxSession(f"max_{user_name}", sessions_dir)
         login_token = max_session.load()
@@ -357,7 +382,6 @@ async def _verify_max_membership(
 
         # Try to get chat info — will fail if user is not a member
         chats = await max_client.inner.get_chats([chat_id])
-        await max_client.disconnect()
 
         if chats:
             print(f"  ✅ MAX: {user_name} is a member of '{chats[0].title}'")
@@ -368,6 +392,12 @@ async def _verify_max_membership(
     except Exception as e:
         print(f"  ❌ MAX: could not verify membership for {user_name} in chat {chat_id} ({e})")
         return False
+    finally:
+        if max_client is not None:
+            try:
+                await max_client.disconnect()
+            except Exception:
+                pass
 
 
 def _print_done():
@@ -414,19 +444,26 @@ async def auth_one_user(
     else:
         print("  Follow the prompts to authenticate your Telegram account:")
 
-    await tg_client.start()
-    me = await tg_client.get_me()
-    telegram_user_id = me.id
-    print(f"  ✅ Telegram: @{me.username or me.first_name} (ID: {telegram_user_id})")
-    await tg_client.stop()
+    try:
+        await tg_client.start()
+        me = await tg_client.get_me()
+        telegram_user_id = me.id
+        print(f"  ✅ Telegram: @{me.username or me.first_name} (ID: {telegram_user_id})")
+    finally:
+        try:
+            await tg_client.stop()
+        except Exception:
+            pass
 
     # ── MAX ───────────────────────────────────────────────────────────────────
     print()
     print(f"  [MAX] Authenticating {name}...")
     max_session = MaxSession(f"max_{name}", sessions_dir)
+    max_user_id: int | None = None
 
     if max_session.exists():
         print(f"  MAX session already exists — verifying...")
+        max_client = None
         try:
             login_token = max_session.load()
             device_id = max_session.load_device_id()
@@ -443,7 +480,6 @@ async def auth_one_user(
             # Update session with user_id if we found it
             if max_user_id:
                 max_session.save(login_token, user_id=max_user_id, device_id=device_id)
-            await max_client.disconnect()
             print(f"  ✅ MAX: session valid (ID: {max_user_id})")
         except Exception as e:
             print(f"  ⚠️  MAX session verification failed: {e}")
@@ -456,13 +492,29 @@ async def auth_one_user(
             else:
                 max_user_id = max_session.load_user_id()
                 print(f"  Using existing session. Stored user ID: {max_user_id}")
+        finally:
+            if max_client is not None:
+                try:
+                    await max_client.disconnect()
+                except Exception:
+                    pass
     else:
         max_user_id = await _do_max_auth(name, sessions_dir)
+
+    if not max_user_id:
+        print("  ⚠️  MAX user ID is required for bridge routing.")
+        max_user_id = prompt_int("Enter MAX user ID (numeric)")
+        # Ensure session has user_id for future runs.
+        if max_session.exists():
+            login_token = max_session.load()
+            device_id = max_session.load_device_id()
+            if device_id:
+                max_session.save(login_token, user_id=max_user_id, device_id=device_id)
 
     return {
         "name": name,
         "telegram_user_id": telegram_user_id,
-        "max_user_id": max_user_id,
+        "max_user_id": int(max_user_id),
         "_tg_client": None,  # already stopped
     }
 
@@ -472,91 +524,97 @@ async def _do_max_auth(name: str, sessions_dir: str) -> int:
 
     print("  Using native TCP/SSL protocol (device_type=DESKTOP)")
     client = NativeMaxAuth()
-    await client.connect()
-    hello = await client.handshake()
-    hello_p = hello.get("payload", {})
-    phone_auth = hello_p.get("phone-auth-enabled")
-    location = hello_p.get("location", "?")
-    print(f"  Connected: location={location}, phone-auth={phone_auth}")
-    if phone_auth is False:
-        print("  ⚠️  Server reports phone-auth DISABLED for this connection")
-
-    phone = prompt("MAX phone number (e.g. +79991234567)")
+    bridge_client = None
+    max_user_id: int | None = None
+    login_token: str | None = None
+    client_device_id = client.device_id
 
     try:
-        sms_token = await client.send_code(phone)
-    except RuntimeError as e:
-        await client.close()
-        if "limit.violate" in str(e):
-            print()
-            print("  ⛔ MAX: слишком много попыток авторизации на этот номер.")
-            print("  Сервер временно заблокировал отправку SMS.")
-            print("  Подождите 1-2 часа и попробуйте снова: ./bridge.sh setup bridges")
-            raise SystemExit(1) from None
-        raise
+        await client.connect()
+        hello = await client.handshake()
+        hello_p = hello.get("payload", {})
+        phone_auth = hello_p.get("phone-auth-enabled")
+        location = hello_p.get("location", "?")
+        print(f"  Connected: location={location}, phone-auth={phone_auth}")
+        if phone_auth is False:
+            print("  ⚠️  Server reports phone-auth DISABLED for this connection")
 
-    print("  SMS code sent!")
-    code = prompt("Enter SMS code")
-    account_data = await client.sign_in(sms_token, int(code))
+        phone = prompt("MAX phone number (e.g. +79991234567)")
 
-    # Handle 2FA
-    password_challenge = account_data.get("passwordChallenge")
-    token_attrs = account_data.get("tokenAttrs", {})
-    login_attrs = token_attrs.get("LOGIN", {})
-
-    if password_challenge and not login_attrs:
-        await client.close()
-        raise RuntimeError(
-            "MAX account has 2FA enabled. "
-            "2FA password auth is not yet supported."
-        )
-
-    login_token = login_attrs.get("token")
-    if not login_token:
-        await client.close()
-        raise RuntimeError(
-            f"No login token in response. Keys: {list(account_data.keys())}"
-        )
-
-    profile = account_data.get("profile", {})
-    max_user_id = _extract_max_user_id(profile, max_session)
-    client_device_id = client.device_id  # save before potential close
-
-    # If sign_in didn't return user_id, use BridgeMaxClient (PyMax full _sync)
-    if not max_user_id:
-        log.info("sign_in profile keys: %s", list(profile.keys()))
-        log.info("Trying BridgeMaxClient login to get user_id...")
         try:
-            # Close NativeMaxAuth before connecting BridgeMaxClient
-            max_session.save(login_token, user_id=None, device_id=client_device_id)
-            await client.close()
-            client = None  # mark closed
+            sms_token = await client.send_code(phone)
+        except RuntimeError as e:
+            if "limit.violate" in str(e):
+                print()
+                print("  ⛔ MAX: слишком много попыток авторизации на этот номер.")
+                print("  Сервер временно заблокировал отправку SMS.")
+                print("  Подождите 1-2 часа и попробуйте снова: ./bridge.sh setup bridges")
+                raise SystemExit(1) from None
+            raise
 
-            bridge_client = BridgeMaxClient(
-                token=login_token, device_id=client_device_id,
+        print("  SMS code sent!")
+        code = prompt("Enter SMS code")
+        account_data = await client.sign_in(sms_token, int(code))
+
+        # Handle 2FA
+        password_challenge = account_data.get("passwordChallenge")
+        token_attrs = account_data.get("tokenAttrs", {})
+        login_attrs = token_attrs.get("LOGIN", {})
+
+        if password_challenge and not login_attrs:
+            raise RuntimeError(
+                "MAX account has 2FA enabled. "
+                "2FA password auth is not yet supported."
             )
-            await bridge_client.connect_and_login()
-            if bridge_client.inner.me is not None:
-                max_user_id = bridge_client.inner.me.id
-                log.info("Got user_id from BridgeMaxClient: %s", max_user_id)
-            else:
-                log.warning("BridgeMaxClient.me is None after login")
-            await bridge_client.disconnect()
-        except Exception as e:
-            log.warning("BridgeMaxClient login for user_id failed: %s", e)
 
-    # Save final session (with user_id if we got it)
-    max_session.save(login_token, user_id=max_user_id, device_id=client_device_id)
-    if client is not None:
-        await client.close()
+        login_token = login_attrs.get("token")
+        if not login_token:
+            raise RuntimeError(
+                f"No login token in response. Keys: {list(account_data.keys())}"
+            )
 
-    if max_user_id:
+        profile = account_data.get("profile", {})
+        max_user_id = _extract_max_user_id(profile, max_session)
+        client_device_id = client.device_id
+
+        # If sign_in didn't return user_id, use BridgeMaxClient (PyMax full _sync)
+        if not max_user_id:
+            log.info("sign_in profile keys: %s", list(profile.keys()))
+            log.info("Trying BridgeMaxClient login to get user_id...")
+            try:
+                # Persist token+device_id early (without user_id) for fallback login.
+                max_session.save(login_token, user_id=None, device_id=client_device_id)
+                bridge_client = BridgeMaxClient(
+                    token=login_token, device_id=client_device_id,
+                )
+                await bridge_client.connect_and_login()
+                if bridge_client.inner.me is not None:
+                    max_user_id = bridge_client.inner.me.id
+                    log.info("Got user_id from BridgeMaxClient: %s", max_user_id)
+                else:
+                    log.warning("BridgeMaxClient.me is None after login")
+            except Exception as e:
+                log.warning("BridgeMaxClient login for user_id failed: %s", e)
+
+        if not max_user_id:
+            print("  ⚠️  MAX user ID not found automatically.")
+            print("  It is required to route messages through the correct account.")
+            max_user_id = prompt_int("Enter MAX user ID (numeric)")
+
+        # Save final session with mandatory user_id.
+        max_session.save(login_token, user_id=int(max_user_id), device_id=client_device_id)
         print(f"  ✅ MAX: authenticated (ID: {max_user_id})")
-    else:
-        print("  ⚠️  MAX: authenticated but user ID not found automatically")
-        print("  You can find it at https://web.max.ru → DevTools → viewerId")
-
-    return max_user_id
+        return int(max_user_id)
+    finally:
+        if bridge_client is not None:
+            try:
+                await bridge_client.disconnect()
+            except Exception:
+                pass
+        try:
+            await client.close()
+        except Exception:
+            pass
 
 
 def _extract_max_user_id(profile: dict, session: MaxSession) -> int | None:
@@ -589,6 +647,7 @@ async def _load_tg_chats_for_user(
     if not session_path.exists():
         return []
 
+    client = None
     try:
         client = Client(
             name=tg_session,
@@ -601,12 +660,17 @@ async def _load_tg_chats_for_user(
         async for dialog in client.get_dialogs():
             if dialog.chat.type in (ChatType.GROUP, ChatType.SUPERGROUP):
                 tg_chats.append(dialog.chat)
-        await client.stop()
         tg_chats.sort(key=lambda c: (c.title or "").lower())
         return tg_chats
     except Exception as e:
         log.warning("Failed to load TG chats for %s: %s", user_name, e)
         return []
+    finally:
+        if client is not None:
+            try:
+                await client.stop()
+            except Exception:
+                pass
 
 
 async def _load_max_chats_for_user(
@@ -618,6 +682,7 @@ async def _load_max_chats_for_user(
     if not max_session.exists():
         return []
 
+    max_client = None
     try:
         login_token = max_session.load()
         device_id = max_session.load_device_id()
@@ -646,12 +711,17 @@ async def _load_max_chats_for_user(
                 "members": ch.participants_count,
             })
 
-        await max_client.disconnect()
         chats.sort(key=lambda c: c["title"].lower())
         return chats
     except Exception as e:
         log.warning("Failed to load MAX chats for %s: %s", user_name, e)
         return []
+    finally:
+        if max_client is not None:
+            try:
+                await max_client.disconnect()
+            except Exception:
+                pass
 
 
 def _select_from_list(items: list, label: str) -> int:
@@ -698,6 +768,13 @@ async def collect_bridges(
 
         if not tg_chats:
             print("  ⚠️  No Telegram groups found for this user")
+            print("  Join at least one Telegram group with this account and retry.")
+            if confirm("Try configuring this bridge with another user?"):
+                continue
+            if bridges and confirm("Finish setup with already configured bridges?"):
+                break
+            print("  No bridge configured in this step.")
+            return bridges
         else:
             print(f"  Found {len(tg_chats)} Telegram group(s)")
 
@@ -794,14 +871,19 @@ def write_config(bridges: list[dict], output_path: str = CONFIG_FILE):
 
     for b in bridges:
         user = b["user"]
+        if user.get("max_user_id") is None:
+            raise ValueError(
+                f"User '{user.get('name', '?')}' has no max_user_id. "
+                "Run setup again and provide a valid MAX user ID."
+            )
         config["bridges"].append({
             "name": b["name"],
-            "telegram_chat_id": b["telegram_chat_id"],
-            "max_chat_id": b["max_chat_id"],
+            "telegram_chat_id": int(b["telegram_chat_id"]),
+            "max_chat_id": int(b["max_chat_id"]),
             "user": {
                 "name": user["name"],
-                "telegram_user_id": user["telegram_user_id"],
-                "max_user_id": user["max_user_id"],
+                "telegram_user_id": int(user["telegram_user_id"]),
+                "max_user_id": int(user["max_user_id"]),
             },
         })
 

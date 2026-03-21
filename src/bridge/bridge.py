@@ -49,6 +49,7 @@ class Bridge:
 
     async def _tg_to_max(self, event: BridgeEvent):
         entry = event.bridge_entry  # primary entry (from listener)
+        tg_chat_id = entry.telegram_chat_id
 
         # Try to route via the sender's own MAX account (authorship match).
         sender_entry = None
@@ -80,7 +81,11 @@ class Bridge:
         # Resolve reply target
         reply_to = None
         if event.reply_to_source_msg_id is not None:
-            reply_to = self.store.get_max_msg_id(entry.name, int(event.reply_to_source_msg_id))
+            reply_to = self.store.get_max_msg_id(
+                tg_chat_id=tg_chat_id,
+                tg_msg_id=int(event.reply_to_source_msg_id),
+                max_chat_id=max_chat_id,
+            )
 
         if event.event_type == "media_group" and event.media_list:
             max_msg_id = await self.max_pool.send_media_multi(
@@ -88,7 +93,16 @@ class Bridge:
                 text, reply_to, elements=max_elements,
             )
             if max_msg_id and event.source_msg_id is not None:
-                self.store.store(entry.name, int(event.source_msg_id), max_msg_id)
+                tg_msg_ids: list[int] | None = None
+                if event.source_msg_ids:
+                    tg_msg_ids = [int(mid) for mid in event.source_msg_ids]
+                self.store.store(
+                    tg_chat_id=tg_chat_id,
+                    tg_msg_id=int(event.source_msg_id),
+                    max_chat_id=max_chat_id,
+                    max_msg_id=max_msg_id,
+                    tg_msg_ids=tg_msg_ids,
+                )
                 self.mirrors.mark_max(max_msg_id)
 
         elif event.event_type == "text":
@@ -96,7 +110,7 @@ class Bridge:
                 max_user_id, max_chat_id, text, reply_to, elements=max_elements,
             )
             if max_msg_id and event.source_msg_id is not None:
-                self.store.store(entry.name, int(event.source_msg_id), max_msg_id)
+                self.store.store(tg_chat_id, int(event.source_msg_id), max_chat_id, max_msg_id)
                 self.mirrors.mark_max(max_msg_id)
 
         elif event.event_type == "photo" and event.media:
@@ -105,7 +119,7 @@ class Bridge:
                 event.media.filename, text, reply_to,
             )
             if max_msg_id and event.source_msg_id is not None:
-                self.store.store(entry.name, int(event.source_msg_id), max_msg_id)
+                self.store.store(tg_chat_id, int(event.source_msg_id), max_chat_id, max_msg_id)
                 self.mirrors.mark_max(max_msg_id)
 
         elif event.event_type in ("video", "file", "audio") and event.media:
@@ -114,30 +128,30 @@ class Bridge:
                 event.media.filename, event.media.mime_type, text, reply_to,
             )
             if max_msg_id and event.source_msg_id is not None:
-                self.store.store(entry.name, int(event.source_msg_id), max_msg_id)
+                self.store.store(tg_chat_id, int(event.source_msg_id), max_chat_id, max_msg_id)
                 self.mirrors.mark_max(max_msg_id)
 
         elif event.event_type in ("photo", "video", "file", "audio"):
             fallback_text = f"{text}\n[{event.event_type.capitalize()} — media download failed]".strip()
-            if not sender_entry:
-                fallback_text = prepend_sender_name(event.sender_display_name, fallback_text)
             max_msg_id = await self.max_pool.send_text(max_user_id, max_chat_id, fallback_text, reply_to)
             if max_msg_id and event.source_msg_id is not None:
-                self.store.store(entry.name, int(event.source_msg_id), max_msg_id)
+                self.store.store(tg_chat_id, int(event.source_msg_id), max_chat_id, max_msg_id)
                 self.mirrors.mark_max(max_msg_id)
 
         elif event.event_type == "sticker":
             sticker_text = text or "[Sticker]"
-            if not sender_entry:
-                sticker_text = prepend_sender_name(event.sender_display_name, sticker_text)
             max_msg_id = await self.max_pool.send_text(max_user_id, max_chat_id, sticker_text, reply_to)
             if max_msg_id and event.source_msg_id is not None:
-                self.store.store(entry.name, int(event.source_msg_id), max_msg_id)
+                self.store.store(tg_chat_id, int(event.source_msg_id), max_chat_id, max_msg_id)
                 self.mirrors.mark_max(max_msg_id)
 
         elif event.event_type == "edit":
             if event.edit_source_msg_id is not None:
-                max_msg_id = self.store.get_max_msg_id(entry.name, int(event.edit_source_msg_id))
+                max_msg_id = self.store.get_max_msg_id(
+                    tg_chat_id=tg_chat_id,
+                    tg_msg_id=int(event.edit_source_msg_id),
+                    max_chat_id=max_chat_id,
+                )
                 if max_msg_id:
                     edit_text = event.text or ""
                     edit_fmt = fmt
@@ -153,7 +167,11 @@ class Bridge:
 
         elif event.event_type == "reaction":
             if event.source_msg_id is not None:
-                max_msg_id = self.store.get_max_msg_id(entry.name, int(event.source_msg_id))
+                max_msg_id = self.store.get_max_msg_id(
+                    tg_chat_id=tg_chat_id,
+                    tg_msg_id=int(event.source_msg_id),
+                    max_chat_id=max_chat_id,
+                )
                 if max_msg_id:
                     self.mirrors.mark_max_reaction(max_msg_id, event.reaction_emoji)
                     await self.max_pool.react(max_user_id, max_chat_id, max_msg_id,
@@ -161,7 +179,11 @@ class Bridge:
 
         elif event.event_type == "delete":
             if event.delete_source_msg_id is not None:
-                max_msg_id = self.store.get_max_msg_id(entry.name, int(event.delete_source_msg_id))
+                max_msg_id = self.store.get_max_msg_id(
+                    tg_chat_id=tg_chat_id,
+                    tg_msg_id=int(event.delete_source_msg_id),
+                    max_chat_id=max_chat_id,
+                )
                 log.debug("tg→max delete: tg_msg=%s → max_msg=%s (bridge=%s)",
                           event.delete_source_msg_id, max_msg_id, entry.name)
                 if max_msg_id:
@@ -171,6 +193,7 @@ class Bridge:
 
     async def _max_to_tg(self, event: BridgeEvent):
         entry = event.bridge_entry  # primary entry (from listener)
+        max_chat_id = entry.max_chat_id
         fmt = event.formatting
 
         # Try to route via the sender's own TG account (authorship match).
@@ -207,7 +230,11 @@ class Bridge:
         # Resolve reply target
         reply_to = None
         if event.reply_to_source_msg_id is not None:
-            reply_to = self.store.get_tg_msg_id(entry.name, str(event.reply_to_source_msg_id))
+            reply_to = self.store.get_tg_msg_id(
+                max_chat_id=max_chat_id,
+                max_msg_id=str(event.reply_to_source_msg_id),
+                tg_chat_id=tg_chat_id,
+            )
 
         
         if event.event_type == "media_group" and event.media_list:
@@ -237,7 +264,13 @@ class Bridge:
                     reply_to_message_id=reply_to,
                 )
                 if msgs and event.source_msg_id is not None:
-                    self.store.store(entry.name, msgs[0].id, str(event.source_msg_id))
+                    self.store.store(
+                        tg_chat_id=tg_chat_id,
+                        tg_msg_id=msgs[0].id,
+                        max_chat_id=max_chat_id,
+                        max_msg_id=str(event.source_msg_id),
+                        tg_msg_ids=[m.id for m in msgs],
+                    )
                 for msg in (msgs or []):
                     self.mirrors.mark_tg(msg.id)
 
@@ -249,7 +282,7 @@ class Bridge:
                 parse_mode=tg_enums.ParseMode.HTML if has_html else tg_enums.ParseMode.DISABLED,
             )
             if event.source_msg_id is not None:
-                self.store.store(entry.name, msg.id, str(event.source_msg_id))
+                self.store.store(tg_chat_id, msg.id, max_chat_id, str(event.source_msg_id))
             self.mirrors.mark_tg(msg.id)
 
         elif event.event_type == "photo" and event.media:
@@ -262,7 +295,7 @@ class Bridge:
                 parse_mode=tg_enums.ParseMode.HTML if has_html else tg_enums.ParseMode.DISABLED,
             )
             if event.source_msg_id is not None:
-                self.store.store(entry.name, msg.id, str(event.source_msg_id))
+                self.store.store(tg_chat_id, msg.id, max_chat_id, str(event.source_msg_id))
             self.mirrors.mark_tg(msg.id)
 
         elif event.event_type in ("video", "audio", "file") and event.media:
@@ -280,7 +313,7 @@ class Bridge:
                 parse_mode=tg_enums.ParseMode.HTML if has_html else tg_enums.ParseMode.DISABLED,
             )
             if event.source_msg_id is not None:
-                self.store.store(entry.name, msg.id, str(event.source_msg_id))
+                self.store.store(tg_chat_id, msg.id, max_chat_id, str(event.source_msg_id))
             self.mirrors.mark_tg(msg.id)
 
         elif event.event_type in ("photo", "video", "audio", "file"):
@@ -291,7 +324,7 @@ class Bridge:
                 parse_mode=tg_enums.ParseMode.DISABLED,
             )
             if event.source_msg_id is not None:
-                self.store.store(entry.name, msg.id, str(event.source_msg_id))
+                self.store.store(tg_chat_id, msg.id, max_chat_id, str(event.source_msg_id))
             self.mirrors.mark_tg(msg.id)
 
         elif event.event_type == "sticker":
@@ -304,12 +337,16 @@ class Bridge:
                 parse_mode=tg_enums.ParseMode.DISABLED,
             )
             if event.source_msg_id is not None:
-                self.store.store(entry.name, msg.id, str(event.source_msg_id))
+                self.store.store(tg_chat_id, msg.id, max_chat_id, str(event.source_msg_id))
             self.mirrors.mark_tg(msg.id)
 
         elif event.event_type == "edit":
             if event.edit_source_msg_id is not None:
-                tg_msg_id = self.store.get_tg_msg_id(entry.name, str(event.edit_source_msg_id))
+                tg_msg_id = self.store.get_tg_msg_id(
+                    max_chat_id=max_chat_id,
+                    max_msg_id=str(event.edit_source_msg_id),
+                    tg_chat_id=tg_chat_id,
+                )
                 if tg_msg_id:
                     edit_text = event.text or ""
                     edit_fmt = fmt
@@ -327,7 +364,11 @@ class Bridge:
 
         elif event.event_type == "reaction":
             if event.source_msg_id is not None:
-                tg_msg_id = self.store.get_tg_msg_id(entry.name, str(event.source_msg_id))
+                tg_msg_id = self.store.get_tg_msg_id(
+                    max_chat_id=max_chat_id,
+                    max_msg_id=str(event.source_msg_id),
+                    tg_chat_id=tg_chat_id,
+                )
                 if tg_msg_id:
                     emoji = event.reaction_emoji
                     self.mirrors.mark_tg_reaction(tg_msg_id, emoji)
@@ -337,6 +378,10 @@ class Bridge:
 
         elif event.event_type == "delete":
             if event.delete_source_msg_id is not None:
-                tg_msg_id = self.store.get_tg_msg_id(entry.name, str(event.delete_source_msg_id))
-                if tg_msg_id:
-                    await client.delete_messages(tg_chat_id, tg_msg_id)
+                tg_msg_ids = self.store.get_tg_msg_ids(
+                    max_chat_id=max_chat_id,
+                    max_msg_id=str(event.delete_source_msg_id),
+                    tg_chat_id=tg_chat_id,
+                )
+                if tg_msg_ids:
+                    await client.delete_messages(tg_chat_id, tg_msg_ids)

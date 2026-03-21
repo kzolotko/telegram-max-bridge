@@ -302,6 +302,7 @@ class TelegramListener:
             media_list=media_list,
             reply_to_source_msg_id=reply_to,
             source_msg_id=messages[0].id,  # first message ID for store mapping
+            source_msg_ids=[m.id for m in messages],
             formatting=fmt or None,
         ))
         log.debug("Flushed album %s: %d media items", group_id, len(media_list))
@@ -351,9 +352,14 @@ class TelegramListener:
             cache_key = (chat_id, msg_id)
             prev_emoji = self._reaction_cache.get(cache_key, "UNSET")
             if prev_emoji == "UNSET":
-                # First time we see this message — initialise cache without syncing
+                # First update for this message in this process.
+                # Sync non-empty first reaction changes; skip empty state.
+                if self.mirrors.is_tg_reaction_mirror(msg_id, our_emoji):
+                    self._reaction_cache[cache_key] = our_emoji
+                    return
                 self._reaction_cache[cache_key] = our_emoji
-                return
+                if our_emoji is None:
+                    return
 
             if our_emoji == prev_emoji:
                 return  # no change
