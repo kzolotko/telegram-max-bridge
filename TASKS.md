@@ -76,7 +76,6 @@
 | 🔴 High | Telegram-бот управления бриджем | Бот для управления через Telegram-чат. **Конфигурирование:** добавление/удаление пользователей и мостов, авторизация MAX-аккаунтов, просмотр/редактирование config.yaml. **Управление состоянием:** статус бриджа (подключения TG/MAX, аптайм), перезапуск отдельных мостов, пауза/возобновление пересылки, просмотр логов в реальном времени. Позволяет управлять бриджем на удалённом сервере без SSH |
 | 🔴 High | Персистентный message store | In-memory store теряется при перезапуске — reply/edit/delete перестают работать. SQLite с TTL |
 | 🔴 High | Асимметричные пользователи | Опциональность `telegram_user_id` / `max_user_id` — пользователь только в одном мессенджере |
-| 🔴 High | Delete собственных сообщений бриджа MAX→TG | MAX не шлёт уведомления об удалении сообщений, отправленных от имени того же аккаунта |
 | 🟡 Medium | Форматирование текста (bold/italic/code) | Конвертация Markdown/HTML (TG) ↔ MAX разметки |
 | 🟡 Medium | Несколько медиафайлов в сообщении | Сейчас обрабатывается только первый аттач |
 | 🟡 Medium | E2E-автотесты | Автоматический прогон тест-кейсов через реальные аккаунты |
@@ -101,8 +100,8 @@
 | ✅ Быстрая доставка MAX→TG | Устранена 3-секундная задержка (pre-populated name cache вместо блокирующего `get_users()`) |
 | ✅ NOTIF_MSG_DELETE (opcode 142) | Обработка уведомлений об удалении сообщений в MAX |
 | ✅ Async SSL (NativeMaxAuth) | Переход с `run_in_executor` + blocking sockets на `asyncio.open_connection` |
-| ✅ Delete TG→MAX в обычных группах | `DeletedMessagesHandler` регистрируется без chat-фильтра; кэш `msg_id→chat_id` восстанавливает chat при удалении |
-| ✅ Delete/Edit MAX→TG (чужие сообщения) | Opcode 128 (status=EDITED/REMOVED) и opcode 142 — все варианты удаления и редактирования чужих сообщений |
+| ✅ Исправить delete в обе стороны | TG→MAX: кэш `msg_id→chat_id` + unfiltered `DeletedMessagesHandler`. MAX→TG: opcode 128 (status=REMOVED) + opcode 142 |
+| ✅ Delete/Edit MAX→TG (редактирование) | Opcode 128 (status=EDITED) — редактирование чужих сообщений в MAX корректно отражается в TG |
 | ✅ Имена отправителей MAX | Предзагрузка участников чатов при старте (`load_members`); имя = `first_name + last_name` из профиля MAX |
 | ✅ `max_user_id` в setup wizard | Надёжное получение ID через `BridgeMaxClient.connect_and_login()` → `inner.me.id` после авторизации |
 | ✅ Тёплый кэш Pyrogram peer | `get_dialogs()` перед `get_chat()` устраняет ошибку «Peer id invalid» для обычных TG-групп |
