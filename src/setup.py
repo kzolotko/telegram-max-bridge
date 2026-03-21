@@ -10,9 +10,12 @@ Usage: python -m src.setup [credentials|bridges]
 """
 
 import asyncio
+import logging
 import re
 import sys
 from pathlib import Path
+
+log = logging.getLogger("bridge.setup")
 
 import yaml
 from pyrogram import Client
@@ -105,6 +108,44 @@ async def setup_credentials():
 
 # ── Mode: bridges (users + chat configuration) ───────────────────────────────
 
+def _load_existing_config() -> tuple[list[dict], list[dict]]:
+    """Load existing config.yaml and return (users, bridges) in setup dict format.
+
+    Returns empty lists if file doesn't exist or can't be parsed.
+    """
+    config_path = Path(CONFIG_FILE)
+    if not config_path.exists():
+        return [], []
+
+    try:
+        raw = yaml.safe_load(config_path.read_text()) or {}
+    except Exception:
+        return [], []
+
+    bridges = []
+    seen_users: dict[str, dict] = {}  # name → user dict
+
+    for b in raw.get("bridges", []):
+        u = b.get("user", {})
+        user_name = u.get("name", "")
+        user_dict = {
+            "name": user_name,
+            "telegram_user_id": u.get("telegram_user_id"),
+            "max_user_id": u.get("max_user_id"),
+        }
+        if user_name and user_name not in seen_users:
+            seen_users[user_name] = user_dict
+
+        bridges.append({
+            "name": b.get("name", ""),
+            "telegram_chat_id": b.get("telegram_chat_id"),
+            "max_chat_id": b.get("max_chat_id"),
+            "user": user_dict,
+        })
+
+    return list(seen_users.values()), bridges
+
+
 async def setup_bridges():
     """Configure user accounts and chat bridges. Requires credentials.yaml."""
 
@@ -113,46 +154,222 @@ async def setup_bridges():
         creds = load_credentials()
     except FileNotFoundError as e:
         print(f"\n  ❌ {e}")
-        print("  Run 'python -m src.setup credentials' first.")
+        print("  Run './bridge.sh setup credentials' first.")
         sys.exit(1)
 
     api_id = creds["api_id"]
     api_hash = creds["api_hash"]
 
-    config_path = Path(CONFIG_FILE)
-    if config_path.exists():
-        print(f"\n  ⚠️  {CONFIG_FILE} already exists.")
-        if not confirm(f"Overwrite {CONFIG_FILE}?"):
-            print("  Keeping existing config.")
-            return
+    existing_users, existing_bridges = _load_existing_config()
 
-    # Authenticate users
-    print_section("User Accounts")
-    print("  Configure the user account(s) that will power the bridge.")
-    print("  Each user needs a Telegram and MAX account.")
+    if existing_bridges:
+        print(f"\n  Found existing config with {len(existing_bridges)} bridge(s) "
+              f"and {len(existing_users)} user(s):")
+        for b in existing_bridges:
+            print(f"    • {b['name']}  ({b['user']['name']})")
+        print()
+        print("  Options:")
+        print("    1. Add new bridge(s) to existing config")
+        print("    2. Add new user to existing bridge")
+        print("    3. Start from scratch (overwrite)")
+        print("    4. Cancel")
+        choice = prompt("Choose [1/2/3/4]", default="1")
+
+        if choice == "4":
+            print("  Cancelled.")
+            return
+        elif choice == "3":
+            existing_users = []
+            existing_bridges = []
+        elif choice == "2":
+            await _add_user_to_bridge(
+                api_id, api_hash, existing_users, existing_bridges,
+            )
+            print_section("Writing config.yaml")
+            write_config(existing_bridges, CONFIG_FILE)
+            _print_done()
+            return
+        # choice == "1" falls through to normal flow with existing data preserved
+
+    # Authenticate users — offer to reuse existing ones
+    users = list(existing_users)  # start with existing
+    if users:
+        print_section("User Accounts")
+        print("  Existing users:")
+        for u in users:
+            print(f"    • {u['name']} (TG: {u['telegram_user_id']}, MAX: {u['max_user_id']})")
+        print()
+        if confirm("Add a new user?"):
+            while True:
+                user = await auth_one_user(api_id, api_hash, SESSIONS_DIR)
+                users.append(user)
+                print()
+                if not confirm("Add another user?"):
+                    break
+    else:
+        print_section("User Accounts")
+        print("  Configure the user account(s) that will power the bridge.")
+        print("  Each user needs a Telegram and MAX account.")
+        print()
+        while True:
+            user = await auth_one_user(api_id, api_hash, SESSIONS_DIR)
+            users.append(user)
+            print()
+            if not confirm("Add another user?"):
+                break
+
+    # Configure new bridges
+    new_bridges = await collect_bridges(users, api_id, api_hash, SESSIONS_DIR)
+    all_bridges = existing_bridges + new_bridges
+
+    # Write config.yaml
+    print_section("Writing config.yaml")
+    write_config(all_bridges, CONFIG_FILE)
+    _print_done()
+
+
+async def _add_user_to_bridge(
+    api_id: int,
+    api_hash: str,
+    existing_users: list[dict],
+    existing_bridges: list[dict],
+):
+    """Add a new user to an existing bridge (multi-user for same chat pair)."""
+    print_section("Add User to Existing Bridge")
+
+    # Pick which bridge
+    unique_pairs: list[dict] = []
+    seen = set()
+    for b in existing_bridges:
+        key = (b["telegram_chat_id"], b["max_chat_id"])
+        if key not in seen:
+            seen.add(key)
+            unique_pairs.append(b)
+
+    print("  Select the bridge to add a user to:")
+    for i, b in enumerate(unique_pairs):
+        current_users = [
+            eb["user"]["name"]
+            for eb in existing_bridges
+            if eb["telegram_chat_id"] == b["telegram_chat_id"]
+            and eb["max_chat_id"] == b["max_chat_id"]
+        ]
+        print(f"    {i + 1}. {b['name']}  (users: {', '.join(current_users)})")
     print()
 
-    users = []
     while True:
-        user = await auth_one_user(api_id, api_hash, SESSIONS_DIR)
-        users.append(user)
-        print()
-        if not confirm("Add another user?"):
-            break
+        try:
+            idx = int(prompt("Select bridge number")) - 1
+            if 0 <= idx < len(unique_pairs):
+                break
+        except ValueError:
+            pass
+        print(f"  Enter a number between 1 and {len(unique_pairs)}")
 
-    # Configure bridges
-    bridges = await collect_bridges(users, api_id, api_hash, SESSIONS_DIR)
+    target = unique_pairs[idx]
 
-    # Write config.yaml (bridges only — no credentials)
-    print_section("Writing config.yaml")
-    write_config(bridges, CONFIG_FILE)
+    # Authenticate new user
+    print()
+    user = await auth_one_user(api_id, api_hash, SESSIONS_DIR)
 
+    # Check if this user already exists for this bridge
+    for eb in existing_bridges:
+        if (eb["telegram_chat_id"] == target["telegram_chat_id"]
+                and eb["max_chat_id"] == target["max_chat_id"]
+                and eb["user"]["name"] == user["name"]):
+            print(f"  ⚠️  User '{user['name']}' is already configured for this bridge.")
+            return
+
+    # Verify membership in both chats
+    print()
+    print(f"  Verifying chat membership for {user['name']}...")
+    tg_ok = await _verify_tg_membership(
+        user["name"], api_id, api_hash, SESSIONS_DIR, target["telegram_chat_id"],
+    )
+    max_ok = await _verify_max_membership(
+        user["name"], SESSIONS_DIR, target["max_chat_id"],
+    )
+
+    if not tg_ok or not max_ok:
+        if not confirm("Continue anyway? (bridge may not work correctly for this user)"):
+            print("  Skipped.")
+            return
+
+    # Add new bridge entry (same chat pair, new user)
+    existing_bridges.append({
+        "name": target["name"],
+        "telegram_chat_id": target["telegram_chat_id"],
+        "max_chat_id": target["max_chat_id"],
+        "user": user,
+    })
+    existing_users.append(user)
+    print(f"  ✅ User '{user['name']}' added to bridge '{target['name']}'")
+
+
+async def _verify_tg_membership(
+    user_name: str,
+    api_id: int,
+    api_hash: str,
+    sessions_dir: str,
+    chat_id: int,
+) -> bool:
+    """Check if user is a member of the Telegram chat. Returns True if OK."""
+    try:
+        tg_client = Client(
+            name=f"tg_{user_name}",
+            api_id=api_id,
+            api_hash=api_hash,
+            workdir=sessions_dir,
+        )
+        await tg_client.start()
+        chat = await tg_client.get_chat(chat_id)
+        await tg_client.stop()
+        print(f"  ✅ Telegram: {user_name} is a member of '{chat.title}'")
+        return True
+    except Exception as e:
+        print(f"  ❌ Telegram: {user_name} is NOT a member of chat {chat_id} ({e})")
+        return False
+
+
+async def _verify_max_membership(
+    user_name: str,
+    sessions_dir: str,
+    chat_id: int,
+) -> bool:
+    """Check if user is a member of the MAX chat. Returns True if OK."""
+    try:
+        max_session = MaxSession(f"max_{user_name}", sessions_dir)
+        login_token = max_session.load()
+        device_id = max_session.load_device_id()
+        if not login_token or not device_id:
+            print(f"  ⚠️  MAX: no session for {user_name} — cannot verify membership")
+            return True  # can't check, assume OK
+
+        max_client = BridgeMaxClient(token=login_token, device_id=device_id)
+        await max_client.connect_and_login()
+
+        # Try to get chat info — will fail if user is not a member
+        chats = await max_client.inner.get_chats([chat_id])
+        await max_client.disconnect()
+
+        if chats:
+            print(f"  ✅ MAX: {user_name} is a member of '{chats[0].title}'")
+            return True
+        else:
+            print(f"  ❌ MAX: {user_name} is NOT a member of chat {chat_id}")
+            return False
+    except Exception as e:
+        print(f"  ❌ MAX: could not verify membership for {user_name} in chat {chat_id} ({e})")
+        return False
+
+
+def _print_done():
     print()
     print("=" * 60)
     print("Setup complete!")
     print()
     print("Start the bridge:")
-    print("  python -m src")
+    print("  ./bridge.sh start")
     print("=" * 60)
 
 
@@ -315,6 +532,47 @@ def _extract_max_user_id(profile: dict, session: MaxSession) -> int | None:
 
 # ── Bridge configuration ─────────────────────────────────────────────────────
 
+async def _load_max_chats(
+    users: list[dict],
+    sessions_dir: str,
+) -> list[dict]:
+    """Load MAX group chats via BridgeMaxClient (using first user's session)."""
+    primary = users[0]
+    max_session = MaxSession(f"max_{primary['name']}", sessions_dir)
+    login_token = max_session.load()
+    device_id = max_session.load_device_id()
+    if not login_token or not device_id:
+        return []
+
+    try:
+        max_client = BridgeMaxClient(token=login_token, device_id=device_id)
+        await max_client.connect_and_login()
+
+        # inner.chats contains group chats, inner.channels contains channels
+        chats = []
+        for chat in max_client.inner.chats:
+            chats.append({
+                "id": chat.id,
+                "title": chat.title or f"Chat {chat.id}",
+                "type": "CHAT",
+                "members": chat.participants_count,
+            })
+        for ch in max_client.inner.channels:
+            chats.append({
+                "id": ch.id,
+                "title": ch.title or f"Channel {ch.id}",
+                "type": "CHANNEL",
+                "members": ch.participants_count,
+            })
+
+        await max_client.disconnect()
+        chats.sort(key=lambda c: c["title"].lower())
+        return chats
+    except Exception as e:
+        log.warning("Failed to load MAX chats: %s", e)
+        return []
+
+
 async def collect_bridges(
     users: list[dict],
     api_id: int,
@@ -338,8 +596,17 @@ async def collect_bridges(
     async for dialog in tg_client.get_dialogs():
         if dialog.chat.type in (ChatType.GROUP, ChatType.SUPERGROUP):
             tg_chats.append(dialog.chat)
+    tg_chats.sort(key=lambda c: (c.title or "").lower())
 
     await tg_client.stop()
+
+    # Load MAX chats
+    print(f"  Loading MAX chats for {primary['name']}...")
+    max_chats = await _load_max_chats(users, sessions_dir)
+    if max_chats:
+        print(f"  Found {len(max_chats)} MAX group chat(s)/channel(s)")
+    else:
+        print("  ⚠️  Could not load MAX chats — you'll need to enter IDs manually")
 
     bridges = []
     while True:
@@ -365,16 +632,30 @@ async def collect_bridges(
 
         # Pick MAX chat
         print()
-        print("  Open https://web.max.ru → go to the desired chat")
-        print("  The URL will look like: https://web.max.ru/#/chats/@chat/-72099589405396")
-        while True:
-            try:
-                url_or_id = prompt("Paste the MAX chat URL (or just the numeric ID)")
-                max_chat_id = parse_max_chat_id(url_or_id)
-                print(f"  ✅ MAX chat ID: {max_chat_id}")
-                break
-            except ValueError as e:
-                print(f"  ❌ {e}")
+        if max_chats:
+            print("  Available MAX chats:")
+            for i, chat in enumerate(max_chats):
+                type_tag = "📢" if chat["type"] == "CHANNEL" else "💬"
+                members = f", {chat['members']} members" if chat["members"] else ""
+                print(f"    {i + 1:2}. {type_tag} {chat['title']}  (ID: {chat['id']}{members})")
+            print(f"    {len(max_chats) + 1:2}. Enter ID manually")
+            print()
+            while True:
+                try:
+                    idx = int(prompt("Select MAX chat number")) - 1
+                    if idx == len(max_chats):
+                        # Manual entry
+                        max_chat_id = _prompt_max_chat_id_manual()
+                        break
+                    if 0 <= idx < len(max_chats):
+                        max_chat_id = max_chats[idx]["id"]
+                        print(f"  ✅ MAX chat: {max_chats[idx]['title']} (ID: {max_chat_id})")
+                        break
+                    print(f"  Enter a number between 1 and {len(max_chats) + 1}")
+                except ValueError:
+                    print("  Enter a number")
+        else:
+            max_chat_id = _prompt_max_chat_id_manual()
 
         # Pick user for this bridge
         if len(users) == 1:
@@ -406,6 +687,20 @@ async def collect_bridges(
             break
 
     return bridges
+
+
+def _prompt_max_chat_id_manual() -> int:
+    """Fallback: ask user to paste MAX chat URL or ID manually."""
+    print("  Open https://web.max.ru → go to the desired chat")
+    print("  The URL will look like: https://web.max.ru/#/chats/@chat/-72099589405396")
+    while True:
+        try:
+            url_or_id = prompt("Paste the MAX chat URL (or just the numeric ID)")
+            max_chat_id = parse_max_chat_id(url_or_id)
+            print(f"  ✅ MAX chat ID: {max_chat_id}")
+            return max_chat_id
+        except ValueError as e:
+            print(f"  ❌ {e}")
 
 
 def write_config(bridges: list[dict], output_path: str = CONFIG_FILE):

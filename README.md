@@ -41,16 +41,16 @@ Telegram-группа                        MAX-чат
 
 ## Требования
 
-| Компонент | Версия       |
-|-----------|--------------|
-| Python    | 3.12+        |
-| Docker    | 20.10+ (опционально) |
+| Компонент | Версия              |
+|-----------|---------------------|
+| Python    | 3.12+               |
+| Docker    | 20.10+ (опционально)|
 
 ---
 
 ## Быстрый старт
 
-### 1. Установка зависимостей
+### 1. Клонировать репозиторий
 
 ```bash
 git clone git@github.com:kzolotko/telegram-max-bridge.git
@@ -69,14 +69,14 @@ pip install -r requirements.txt
 2. Аутентификация TG-аккаунта (телефон + код)
 3. Аутентификация MAX-аккаунта (телефон + SMS)
 4. Выбор TG-группы из списка ваших чатов
-5. Ввод MAX chat ID (из URL `web.max.ru`)
+5. Выбор MAX-чата из списка ваших чатов
 6. Запись `credentials.yaml` и `config.yaml`
 
 Доступны отдельные режимы:
 
 ```bash
-./bridge.sh setup credentials   # только API credentials (один раз)
-./bridge.sh setup bridges       # только пользователи + чаты
+./bridge.sh setup credentials   # только API credentials (один раз при первом запуске)
+./bridge.sh setup bridges       # добавить/изменить пользователей и чаты
 ```
 
 ### 3. Запуск
@@ -84,6 +84,8 @@ pip install -r requirements.txt
 ```bash
 ./bridge.sh start
 ```
+
+> После `setup` авторизация уже выполнена — дополнительно запускать `./bridge.sh auth` не нужно.
 
 ---
 
@@ -110,8 +112,8 @@ cd telegram-max-bridge
 pip install -r requirements.txt
 ./bridge.sh setup
 
-# Собрать образ и запустить
-docker compose up -d --build
+# Собрать образ и запустить в фоне
+./bridge.sh docker up
 ```
 
 > **Если Python нет на сервере** — настройте и авторизуйтесь локально, затем скопируйте файлы:
@@ -120,32 +122,44 @@ docker compose up -d --build
 > scp -r sessions/ user@server:/path/to/telegram-max-bridge/
 > ```
 
-### Docker-команды через скрипт
+### Команды Docker
 
 ```bash
-./bridge.sh docker build     # собрать образ
-./bridge.sh docker up        # запустить в фоне
+./bridge.sh docker up        # собрать образ и запустить в фоне
 ./bridge.sh docker down      # остановить
+./bridge.sh docker restart   # перезапуск (после изменения config.yaml)
 ./bridge.sh docker logs      # логи в реальном времени
-./bridge.sh docker restart   # перезапуск
+./bridge.sh docker status    # статус контейнера
+./bridge.sh docker build     # только пересобрать образ
 ```
 
-Или напрямую через docker compose:
-
-```bash
-docker compose up -d --build   # собрать и запустить
-docker compose logs -f         # логи
-docker compose restart         # перезапуск
-docker compose down            # остановить
-```
+> **Важно:** `setup` и `auth` всегда запускаются **локально** (`./bridge.sh setup`, `./bridge.sh auth`) — они интерактивны и требуют ввода с клавиатуры. Docker используется только для запуска самого бриджа.
 
 ### Что монтируется в контейнер
 
-| Путь на хосте         | Путь в контейнере         | Режим      |
+| Путь на хосте         | Путь в контейнере        | Режим      |
 |-----------------------|--------------------------|------------|
 | `./credentials.yaml`  | `/app/credentials.yaml`  | read-only  |
 | `./config.yaml`       | `/app/config.yaml`       | read-only  |
 | `./sessions/`         | `/app/sessions/`         | read-write |
+
+---
+
+## Все команды
+
+| Команда | Описание |
+|---------|----------|
+| `./bridge.sh start` | Запустить бридж локально |
+| `./bridge.sh setup` | Полный мастер настройки |
+| `./bridge.sh setup credentials` | Настроить API credentials |
+| `./bridge.sh setup bridges` | Добавить/изменить пользователей и чаты |
+| `./bridge.sh auth` | Повторная авторизация (при истёкшей сессии или ручном изменении конфига) |
+| `./bridge.sh docker up` | Собрать образ и запустить в фоне |
+| `./bridge.sh docker down` | Остановить Docker |
+| `./bridge.sh docker restart` | Перезапустить Docker |
+| `./bridge.sh docker logs` | Логи Docker |
+| `./bridge.sh docker status` | Статус контейнера |
+| `./bridge.sh docker build` | Пересобрать образ |
 
 ---
 
@@ -221,49 +235,11 @@ bridges:
 
 > Подробные примеры (несколько чатов, несколько пользователей) — в `config.example.yaml`.
 
-### Шаг 4: Авторизация аккаунтов
-
-```bash
-./bridge.sh auth
-```
-
-Скрипт последовательно авторизует каждого пользователя из конфига:
-
-- **Telegram**: телефон + код из SMS/приложения
-- **MAX**: телефон + SMS код (через нативный TCP/SSL протокол)
-
-После авторизации в `sessions/` появятся файлы:
-
-```
-sessions/
-├── tg_alice.session        # Pyrogram-сессия
-└── max_alice.max_session   # MAX-сессия (login_token + device_id)
-```
-
-> Файлы сессий содержат токены доступа к аккаунтам — **не публикуйте их**.
-
-### Шаг 5: Запуск
+### Шаг 4: Запуск
 
 ```bash
 ./bridge.sh start
 ```
-
----
-
-## Команды
-
-| Команда | Описание |
-|---------|----------|
-| `./bridge.sh start` | Запустить бридж |
-| `./bridge.sh setup` | Полный мастер настройки |
-| `./bridge.sh setup credentials` | Настроить API credentials |
-| `./bridge.sh setup bridges` | Настроить пользователей и чаты |
-| `./bridge.sh auth` | Авторизация аккаунтов (по конфигу) |
-| `./bridge.sh docker build` | Собрать Docker-образ |
-| `./bridge.sh docker up` | Запустить в Docker |
-| `./bridge.sh docker down` | Остановить Docker |
-| `./bridge.sh docker logs` | Логи Docker |
-| `./bridge.sh docker restart` | Перезапуск Docker |
 
 ---
 
@@ -285,7 +261,7 @@ src/
 │   ├── listener.py      # Pyrogram MTProto: слушает TG-группу
 │   └── client_pool.py   # Пул Pyrogram-клиентов, по одному на пользователя
 └── max/
-    ├── native_client.py # Нативный TCP/SSL клиент (авторизация + listener)
+    ├── native_client.py # Нативный TCP/SSL клиент (авторизация)
     ├── bridge_client.py # Обёртка SocketMaxClient для бриджа
     ├── listener.py      # Слушает MAX-чат через нативный протокол
     ├── client_pool.py   # Пул MAX-клиентов для отправки
@@ -335,19 +311,39 @@ src/
 
 ---
 
-## Troubleshooting
+## Повторная авторизация (`./bridge.sh auth`)
 
-### `MAX session not found (...). Run './bridge.sh auth' first.`
+После первоначального `./bridge.sh setup` сессии уже созданы. `./bridge.sh auth` нужен только в этих случаях:
 
-Сессия не создана. Запустите авторизацию:
-
+**Сессия истекла или была отозвана:**
 ```bash
+rm sessions/max_alice.max_session   # или tg_alice.session
 ./bridge.sh auth
 ```
 
+**Перенос на новый сервер** (есть config.yaml, но нет сессий):
+```bash
+scp credentials.yaml config.yaml user@server:/path/to/telegram-max-bridge/
+ssh user@server
+cd /path/to/telegram-max-bridge
+pip install -r requirements.txt
+./bridge.sh auth       # создаёт сессии по существующему конфигу
+./bridge.sh docker up
+```
+
+**Ручное добавление пользователя в config.yaml** (минуя wizard):
+```bash
+nano config.yaml       # добавили нового пользователя
+./bridge.sh auth       # авторизует только тех, у кого нет сессии
+```
+
+---
+
+## Troubleshooting
+
 ### MAX-сессия истекла
 
-Токен MAX протухает через несколько недель неактивности. Удалите файл и повторите:
+Токен MAX протухает через несколько недель неактивности:
 
 ```bash
 rm sessions/max_alice.max_session
@@ -365,10 +361,10 @@ rm sessions/tg_alice.session
 
 ### `error.limit.violate — Попробуйте позже`
 
-MAX ограничивает частоту запросов SMS. Подождите 5–15 минут и повторите.
+MAX ограничивает частоту запросов SMS. Подождите 1–2 часа и повторите.
 
 ### Сообщения не пересылаются
 
 - Убедитесь, что аккаунт пользователя добавлен в оба чата (TG и MAX).
-- Проверьте логи: `./bridge.sh start` или `./bridge.sh docker logs`.
+- Проверьте логи: `./bridge.sh docker logs` (Docker) или `./bridge.sh start` (локально).
 - MAX переподключается автоматически при разрыве — это нормально.

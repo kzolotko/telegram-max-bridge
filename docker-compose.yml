@@ -15,35 +15,3 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-
-  # Interactive setup — run with: docker compose run --rm setup
-  setup:
-    build: .
-    image: telegram-max-bridge
-    container_name: telegram-max-bridge-setup
-    stdin_open: true
-    tty: true
-    profiles: ["tools"]
-
-    command: ["python", "-m", "src.setup"]
-
-    volumes:
-      - ./credentials.yaml:/app/credentials.yaml
-      - ./config.yaml:/app/config.yaml
-      - ./sessions:/app/sessions
-
-  # Interactive auth — run with: docker compose run --rm auth
-  auth:
-    build: .
-    image: telegram-max-bridge
-    container_name: telegram-max-bridge-auth
-    stdin_open: true
-    tty: true
-    profiles: ["tools"]
-
-    command: ["python", "-m", "src.auth"]
-
-    volumes:
-      - ./credentials.yaml:/app/credentials.yaml:ro
-      - ./config.yaml:/app/config.yaml:ro
-      - ./sessions:/app/sessions

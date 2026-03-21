@@ -2,12 +2,6 @@
 #
 # Telegram ↔ MAX Bridge — convenience launcher
 #
-# Usage:
-#   ./bridge.sh start                  — run the bridge
-#   ./bridge.sh setup [mode]           — interactive setup wizard
-#   ./bridge.sh auth                   — authenticate accounts (from config)
-#   ./bridge.sh docker <command>       — Docker operations
-#
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -19,22 +13,27 @@ Telegram ↔ MAX Bridge
 
 Usage: ./bridge.sh <command> [args]
 
-Commands:
-  start                   Run the bridge
+Local commands:
+  start                   Run the bridge locally
   setup                   Full setup wizard (credentials + users + bridges)
   setup credentials       Set up Telegram API credentials only
   setup bridges           Configure users and chat bridges
   auth                    Authenticate accounts (reads config.yaml)
-  docker build            Build Docker image
-  docker up               Start in Docker (detached)
-  docker down             Stop Docker containers
-  docker logs             Follow Docker logs
-  docker restart          Restart Docker containers
+
+Docker commands:
+  docker up               Build image and start in background
+  docker down             Stop containers
+  docker restart          Restart containers (after config changes)
+  docker logs             Follow container logs
+  docker status           Show container status
+  docker build            Rebuild image without restarting
 
 Examples:
   ./bridge.sh setup               # first-time setup
   ./bridge.sh start               # run locally
   ./bridge.sh docker up           # run in Docker
+  ./bridge.sh docker logs         # watch logs
+  ./bridge.sh docker restart      # apply config changes
 EOF
 }
 
@@ -55,27 +54,29 @@ cmd_docker() {
     shift 2>/dev/null || true
 
     case "$subcmd" in
-        build)
-            docker compose build "$@"
-            ;;
         up)
             docker compose up -d --build "$@"
             ;;
         down)
             docker compose down "$@"
             ;;
-        logs)
-            docker compose logs -f "$@"
-            ;;
         restart)
             docker compose restart "$@"
             ;;
+        logs)
+            docker compose logs -f "$@"
+            ;;
+        status)
+            docker compose ps "$@"
+            ;;
+        build)
+            docker compose build "$@"
+            ;;
         "")
-            echo "Usage: ./bridge.sh docker <build|up|down|logs|restart>"
+            echo "Usage: ./bridge.sh docker <up|down|restart|logs|status|build>"
             exit 1
             ;;
         *)
-            # Pass through any other docker compose command
             docker compose "$subcmd" "$@"
             ;;
     esac
@@ -87,12 +88,12 @@ command="${1:-}"
 shift 2>/dev/null || true
 
 case "$command" in
-    start)    cmd_start "$@" ;;
-    setup)    cmd_setup "$@" ;;
-    auth)     cmd_auth "$@" ;;
-    docker)   cmd_docker "$@" ;;
-    help|-h|--help)  usage ;;
-    "")       usage; exit 1 ;;
+    start)          cmd_start "$@" ;;
+    setup)          cmd_setup "$@" ;;
+    auth)           cmd_auth "$@" ;;
+    docker)         cmd_docker "$@" ;;
+    help|-h|--help) usage ;;
+    "")             usage; exit 1 ;;
     *)
         echo "Unknown command: $command"
         echo "Run './bridge.sh help' for usage."
