@@ -349,6 +349,9 @@ async def _verify_max_membership(
             print(f"  ⚠️  MAX: no session for {user_name} — cannot verify membership")
             return True  # can't check, assume OK
 
+        # Brief pause — MAX server rejects rapid reconnects from same device
+        await asyncio.sleep(2)
+
         max_client = BridgeMaxClient(token=login_token, device_id=device_id)
         await max_client.connect_and_login()
 
@@ -431,7 +434,15 @@ async def auth_one_user(
                 raise RuntimeError("No device_id in session")
             max_client = BridgeMaxClient(token=login_token, device_id=device_id)
             await max_client.connect_and_login()
-            max_user_id = max_session.load_user_id()
+            # Get user_id from PyMax (reliable) — session file may lack it
+            max_user_id = None
+            if max_client.inner.me is not None:
+                max_user_id = max_client.inner.me.id
+            if not max_user_id:
+                max_user_id = max_session.load_user_id()
+            # Update session with user_id if we found it
+            if max_user_id:
+                max_session.save(login_token, user_id=max_user_id, device_id=device_id)
             await max_client.disconnect()
             print(f"  ✅ MAX: session valid (ID: {max_user_id})")
         except Exception as e:
@@ -612,6 +623,9 @@ async def _load_max_chats_for_user(
         device_id = max_session.load_device_id()
         if not login_token or not device_id:
             return []
+
+        # Brief pause — MAX server rejects rapid reconnects from same device
+        await asyncio.sleep(2)
 
         max_client = BridgeMaxClient(token=login_token, device_id=device_id)
         await max_client.connect_and_login()
