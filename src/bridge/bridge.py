@@ -122,6 +122,8 @@ class Bridge:
         elif event.event_type == "delete":
             if event.delete_source_msg_id is not None:
                 max_msg_id = self.store.get_max_msg_id(entry.name, int(event.delete_source_msg_id))
+                log.debug("tg→max delete: tg_msg=%s → max_msg=%s (bridge=%s)",
+                          event.delete_source_msg_id, max_msg_id, entry.name)
                 if max_msg_id:
                     await self.max_pool.delete_msg(max_user_id, max_chat_id, max_msg_id)
 

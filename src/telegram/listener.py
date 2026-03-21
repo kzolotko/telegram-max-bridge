@@ -46,7 +46,11 @@ class TelegramListener:
 
         self.client.add_handler(MessageHandler(self._handle_message, chat_filter))
         self.client.add_handler(EditedMessageHandler(self._handle_edited_message, chat_filter))
-        self.client.add_handler(DeletedMessagesHandler(self._handle_deleted_messages, chat_filter))
+        # DeletedMessagesHandler registered WITHOUT chat filter: in regular
+        # (non-super) groups Pyrogram does not attach chat info to deleted
+        # messages, so filters.chat() would never match and the handler
+        # would never fire. We filter manually inside using _msg_chat_cache.
+        self.client.add_handler(DeletedMessagesHandler(self._handle_deleted_messages))
 
         me = await self.client.get_me()
         log.info("Started for %s as @%s (ID: %d)", self.user.name, me.username, me.id)
@@ -207,6 +211,7 @@ class TelegramListener:
                 chat_id = message.chat.id if message.chat else \
                           self._msg_chat_cache.get(message.id)
                 if not chat_id:
+                    log.debug("TG delete: no chat_id for msg %s — not in cache, skipping", message.id)
                     continue
                 bridge_entry = self.lookup.get_primary_by_tg(chat_id)
                 if not bridge_entry:
