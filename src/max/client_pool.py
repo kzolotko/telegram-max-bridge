@@ -1,9 +1,6 @@
 import logging
 
-from vkmax.client import MaxClient
-from .patched_client import PatchedMaxClient
-from vkmax.functions.messages import send_message, reply_message, edit_message, delete_message
-
+from .bridge_client import BridgeMaxClient
 from ..types import AppConfig, UserMapping
 from .session import MaxSession
 from .media import (
@@ -20,7 +17,7 @@ class MaxClientPool:
 
     def __init__(self, config: AppConfig):
         self.config = config
-        self._clients: dict[int, MaxClient] = {}  # max_user_id -> MaxClient
+        self._clients: dict[int, BridgeMaxClient] = {}  # max_user_id -> client
         self._user_ids: list[int] = []
 
     async def init(self, users: list[UserMapping]) -> list[int]:
@@ -35,9 +32,15 @@ class MaxClientPool:
                 )
 
             login_token = session.load()
-            client = PatchedMaxClient()
-            await client.connect()
-            await client.login_by_token(login_token)
+            device_id = session.load_device_id()
+            if not device_id:
+                raise RuntimeError(
+                    f"No device_id in MAX session for {user.name}. "
+                    f"Re-authenticate with 'python -m src.auth'."
+                )
+
+            client = BridgeMaxClient(token=login_token, device_id=device_id)
+            await client.connect_and_login()
 
             self._clients[user.max_user_id] = client
             user_ids.append(user.max_user_id)
@@ -46,10 +49,10 @@ class MaxClientPool:
 
         return user_ids
 
-    def get_client(self, max_user_id: int) -> MaxClient | None:
+    def get_client(self, max_user_id: int) -> BridgeMaxClient | None:
         return self._clients.get(max_user_id)
 
-    def get_any_client(self) -> MaxClient | None:
+    def get_any_client(self) -> BridgeMaxClient | None:
         for client in self._clients.values():
             return client
         return None
@@ -86,19 +89,11 @@ class MaxClientPool:
         if not client:
             return None
 
-        if reply_to:
-            response = await reply_message(
-                client=client,
-                chat_id=chat_id,
-                text=text,
-                reply_to_message_id=int(reply_to),
-            )
-        else:
-            response = await send_message(
-                client=client,
-                chat_id=chat_id,
-                text=text,
-            )
+        response = await client.send_message(
+            chat_id=chat_id,
+            text=text,
+            reply_to=int(reply_to) if reply_to else None,
+        )
 
         return self._extract_msg_id(response)
 
@@ -113,8 +108,7 @@ class MaxClientPool:
         if not client:
             return
 
-        await edit_message(
-            client=client,
+        await client.edit_message(
             chat_id=chat_id,
             message_id=int(message_id),
             text=text,
@@ -130,10 +124,9 @@ class MaxClientPool:
         if not client:
             return
 
-        await delete_message(
-            client=client,
+        await client.delete_message(
             chat_id=chat_id,
-            message_ids=[message_id],
+            message_ids=[int(message_id)],
         )
 
     async def send_photo(

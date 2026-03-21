@@ -17,7 +17,8 @@ import yaml
 from pyrogram import Client
 from pyrogram.enums import ChatType
 
-from .max.patched_client import PatchedMaxClient
+from .max.native_client import NativeMaxAuth
+from .max.bridge_client import BridgeMaxClient
 from .max.session import MaxSession
 
 
@@ -171,11 +172,12 @@ async def auth_one_user(
         print(f"  MAX session already exists — verifying...")
         try:
             login_token = max_session.load()
-            max_client = PatchedMaxClient()
-            await max_client.connect()
-            resp = await max_client.login_by_token(login_token)
-            profile = resp.get("payload", {}).get("profile", {})
-            max_user_id = _extract_max_user_id(profile, max_session)
+            device_id = max_session.load_device_id()
+            if not device_id:
+                raise RuntimeError("No device_id in session")
+            max_client = BridgeMaxClient(token=login_token, device_id=device_id)
+            await max_client.connect_and_login()
+            max_user_id = max_session.load_user_id()
             await max_client.disconnect()
             print(f"  ✅ MAX: session valid (ID: {max_user_id})")
         except Exception as e:
@@ -204,34 +206,42 @@ async def auth_one_user(
 
 async def _do_max_auth(name: str, sessions_dir: str) -> int:
     max_session = MaxSession(f"max_{name}", sessions_dir)
-    max_client = PatchedMaxClient()
-    await max_client.connect()
+
+    print("  Using native TCP/SSL protocol (device_type=DESKTOP)")
+    client = NativeMaxAuth()
+    await client.connect()
+    await client.handshake()
 
     phone = prompt("MAX phone number (e.g. +79991234567)")
-    try:
-        sms_token = await max_client.send_code(phone)
-    except KeyError:
-        await max_client._connection.close()
-        raise RuntimeError(
-            "MAX server rejected the auth request (auth.request.forbidden).\n"
-            "  This usually means too many recent auth attempts — wait 10–15 minutes and retry.\n"
-            "  If you already have a working session from before, run: python -m src.auth\n"
-            "  (it will verify the existing session and skip re-authentication if it's still valid)."
-        )
-    except Exception as e:
-        await max_client._connection.close()
-        raise RuntimeError(f"Failed to send MAX SMS code: {e}")
+    sms_token = await client.send_code(phone)
 
     print("  SMS code sent!")
-    code = int(prompt("Enter SMS code"))
-    resp = await max_client.sign_in(sms_token, code)
+    code = prompt("Enter SMS code")
+    account_data = await client.sign_in(sms_token, int(code))
 
-    login_token = resp["payload"]["tokenAttrs"]["LOGIN"]["token"]
-    profile = resp.get("payload", {}).get("profile", {})
+    # Handle 2FA
+    password_challenge = account_data.get("passwordChallenge")
+    login_attrs = account_data.get("tokenAttrs", {}).get("LOGIN", {})
+
+    if password_challenge and not login_attrs:
+        await client.close()
+        raise RuntimeError(
+            "MAX account has 2FA enabled. "
+            "2FA password auth is not yet supported."
+        )
+
+    login_token = login_attrs.get("token")
+    if not login_token:
+        await client.close()
+        raise RuntimeError(
+            f"No login token in response. Keys: {list(account_data.keys())}"
+        )
+
+    profile = account_data.get("profile", {})
     max_user_id = _extract_max_user_id(profile, max_session)
 
-    max_session.save(login_token, user_id=max_user_id)
-    await max_client.disconnect()
+    max_session.save(login_token, user_id=max_user_id, device_id=client.device_id)
+    await client.close()
 
     if max_user_id:
         print(f"  ✅ MAX: authenticated (ID: {max_user_id})")

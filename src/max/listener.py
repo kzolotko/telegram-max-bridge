@@ -1,10 +1,8 @@
 import asyncio
 import logging
-from typing import Callable, Awaitable
+from typing import Callable, Awaitable, Any
 
-from vkmax.client import MaxClient
-from .patched_client import PatchedMaxClient
-
+from .bridge_client import BridgeMaxClient
 from ..bridge.mirror_tracker import MirrorTracker
 from ..config import ConfigLookup
 from ..types import AppConfig, BridgeEvent, MediaInfo, UserMapping
@@ -18,7 +16,7 @@ RECONNECT_MAX_DELAY = 60
 
 
 class MaxListener:
-    """Listens for messages in MAX using a user account via vkmax WebSocket."""
+    """Listens for messages in MAX using a user account via native TCP/SSL."""
 
     def __init__(
         self,
@@ -33,9 +31,10 @@ class MaxListener:
         self.mirrors = mirror_tracker
         self.on_event = on_event
         self.user = user
-        self.client: MaxClient | None = None
+        self.client: BridgeMaxClient | None = None
         self._my_user_id: int = user.max_user_id
         self._login_token: str | None = None
+        self._device_id: str | None = None
         self._stopped = False
         self._monitor_task: asyncio.Task | None = None
         self._name_cache: dict[int, str] = {}  # max_user_id -> display name
@@ -49,6 +48,12 @@ class MaxListener:
             )
 
         self._login_token = session.load()
+        self._device_id = session.load_device_id()
+        if not self._device_id:
+            raise RuntimeError(
+                f"No device_id in MAX session for {self.user.name}. "
+                f"Re-authenticate with 'python -m src.auth'."
+            )
         await self._connect()
 
         self._monitor_task = asyncio.create_task(self._reconnect_loop())
@@ -57,18 +62,16 @@ class MaxListener:
         return self._my_user_id
 
     async def _connect(self):
-        self.client = PatchedMaxClient()
-        await self.client.connect()
-        login_response = await self.client.login_by_token(self._login_token)
-
-        await self.client.set_callback(self._handle_packet)
+        self.client = BridgeMaxClient(token=self._login_token, device_id=self._device_id)
+        self.client.set_raw_callback(self._handle_packet)
+        await self.client.connect_and_login()
 
     async def _reconnect_loop(self):
         delay = RECONNECT_BASE_DELAY
         while not self._stopped:
             try:
-                if self.client and self.client._recv_task:
-                    await self.client._recv_task
+                if self.client and self.client.recv_task:
+                    await self.client.recv_task
             except Exception:
                 pass
 
@@ -101,45 +104,55 @@ class MaxListener:
                 pass
 
     async def _resolve_sender_name(self, sender_id: int) -> str:
-        """Resolve display name for a MAX user ID, with caching."""
+        """Resolve display name for a MAX user ID, with caching.
+
+        Uses a short timeout to avoid blocking message delivery —
+        pymax's CONTACT_INFO request often times out on the shared connection.
+        Falls back to 'User:<id>' immediately if name can't be resolved quickly.
+        """
         if sender_id in self._name_cache:
             return self._name_cache[sender_id]
         try:
-            from vkmax.functions.users import resolve_users
-            resp = await resolve_users(self.client, [sender_id])
-            contacts = resp.get("payload", {}).get("contacts", [])
-            if contacts:
-                c = contacts[0]
-                # names[] contains variants; first entry is preferred (CUSTOM > ONEME)
-                names = c.get("names", [])
+            users = await asyncio.wait_for(
+                self.client.get_users([sender_id]),
+                timeout=3.0,
+            )
+            if users:
+                u = users[0]
                 name = None
-                if names:
-                    name = names[0].get("name") or names[0].get("firstName")
-                if not name:
-                    name = c.get("displayName") or c.get("firstName")
+                if hasattr(u, 'names') and u.names:
+                    name = u.names[0].first_name or u.names[0].last_name
+                if not name and hasattr(u, 'display_name'):
+                    name = u.display_name
+                if not name and hasattr(u, 'first_name'):
+                    name = u.first_name
                 if name:
                     self._name_cache[sender_id] = name
                     return name
         except Exception as e:
-            log.warning("Could not resolve MAX user %s: %s", sender_id, e)
+            log.debug("Could not resolve MAX user %s: %s", sender_id, e)
         fallback = f"User:{sender_id}"
         self._name_cache[sender_id] = fallback
         return fallback
 
-    async def _handle_packet(self, client: MaxClient, packet: dict):
+    async def _handle_packet(self, data: dict[str, Any]):
         try:
-            opcode = packet.get("opcode", 0)
+            opcode = data.get("opcode", 0)
+            log.debug("RAW PACKET opcode=%s keys=%s", opcode, list((data.get("payload") or {}).keys()))
 
-            if opcode == 128:
-                await self._handle_message(packet)
-            elif opcode == 67:
-                await self._handle_edited_message(packet)
-            elif opcode == 66:
-                await self._handle_deleted_message(packet)
+            # PyMax uses Opcode enum values (ints) for opcodes
+            if opcode == 128:  # NOTIF_MESSAGE
+                await self._handle_message(data)
+            elif opcode == 67:  # MSG_EDIT notification
+                await self._handle_edited_message(data)
+            elif opcode == 66:  # MSG_DELETE notification
+                await self._handle_deleted_message(data)
+            elif opcode == 142:  # NOTIF_MSG_DELETE
+                await self._handle_deleted_message_notif(data)
             elif opcode not in (0, 1, 2, 3, 4, 5, 130, 132):
                 log.debug("Unhandled opcode: %s", opcode)
         except Exception as e:
-            log.error("Error handling packet (opcode=%s): %s", packet.get("opcode"), e, exc_info=True)
+            log.error("Error handling packet (opcode=%s): %s", data.get("opcode"), e, exc_info=True)
 
     async def _handle_message(self, packet: dict):
         payload = packet.get("payload", {})
@@ -291,9 +304,36 @@ class MaxListener:
         ))
 
     async def _handle_deleted_message(self, packet: dict):
+        """Handle MSG_DELETE (opcode 66) — server-side delete confirmation."""
         payload = packet.get("payload", {})
         chat_id = payload.get("chatId")
         message_ids = payload.get("messageIds", [])
+        log.info("MAX delete (op=66): chat=%s ids=%s", chat_id, message_ids)
+        if not chat_id:
+            return
+
+        bridge_entry = self.lookup.get_primary_by_max(chat_id)
+        if not bridge_entry:
+            return
+
+        for mid in message_ids:
+            await self.on_event(BridgeEvent(
+                direction="max-to-tg",
+                bridge_entry=bridge_entry,
+                sender_display_name="Unknown",
+                event_type="delete",
+                delete_source_msg_id=str(mid),
+                source_msg_id=str(mid),
+            ))
+
+    async def _handle_deleted_message_notif(self, packet: dict):
+        """Handle NOTIF_MSG_DELETE (opcode 142) — push notification to all clients."""
+        payload = packet.get("payload", {})
+        chat_id = payload.get("chatId")
+        # NOTIF_MSG_DELETE payload uses "messageIds" list
+        message_ids = payload.get("messageIds", [])
+        log.info("MAX delete notif (op=142): chat=%s ids=%s payload_keys=%s",
+                 chat_id, message_ids, list(payload.keys()))
         if not chat_id:
             return
 

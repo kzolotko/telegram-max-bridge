@@ -1,7 +1,7 @@
 """
 MAX media upload/download helpers.
 
-Upload flow (user account via WebSocket + HTTP):
+Upload flow (user account via native protocol + HTTP):
 1. Request upload URL via opcode 80
 2. HTTP POST multipart to that URL
 3. Use returned token in message attaches
@@ -9,8 +9,10 @@ Upload flow (user account via WebSocket + HTTP):
 
 import aiohttp
 from random import randint
+from typing import TYPE_CHECKING
 
-from vkmax.client import MaxClient
+if TYPE_CHECKING:
+    from .bridge_client import BridgeMaxClient
 
 
 UPLOAD_HEADERS = {
@@ -29,7 +31,7 @@ UPLOAD_HEADERS = {
 }
 
 
-async def get_upload_url(client: MaxClient) -> str:
+async def get_upload_url(client: "BridgeMaxClient") -> str:
     """Request a photo upload URL via opcode 80."""
     response = await client.invoke_method(opcode=80, payload={"count": 1})
     return response["payload"]["url"]
@@ -60,7 +62,7 @@ async def upload_photo_to_url(upload_url: str, data: bytes, filename: str = "pho
 
 
 async def send_photo_message(
-    client: MaxClient,
+    client: "BridgeMaxClient",
     chat_id: int,
     photo_token: str,
     caption: str = "",
@@ -82,7 +84,7 @@ async def send_photo_message(
     )
 
 
-async def get_file_upload_url(client: MaxClient) -> str:
+async def get_file_upload_url(client: "BridgeMaxClient") -> str:
     """Request a file upload URL via opcode 80 with type FILE."""
     response = await client.invoke_method(opcode=80, payload={"count": 1, "type": "FILE"})
     return response["payload"]["url"]
@@ -109,7 +111,7 @@ async def upload_file_to_url(
 
 
 async def send_file_message(
-    client: MaxClient,
+    client: "BridgeMaxClient",
     chat_id: int,
     file_info: dict,
     caption: str = "",

@@ -12,11 +12,8 @@ from pyrogram import Client
 
 from .config import load_config, ConfigLookup
 from .max.session import MaxSession
-
-try:
-    from .max.patched_client import PatchedMaxClient as MaxClient
-except ImportError:
-    MaxClient = None
+from .max.native_client import NativeMaxAuth
+from .max.bridge_client import BridgeMaxClient
 
 
 async def auth_telegram(session_name: str, api_id: int, api_hash: str, sessions_dir: str):
@@ -47,45 +44,51 @@ async def auth_max(session_name: str, sessions_dir: str):
     if session.exists():
         print(f"  MAX session '{session_name}' already exists. Verifying...")
         login_token = session.load()
-        client = MaxClient()
-        await client.connect()
-        try:
-            await client.login_by_token(login_token)
-            print(f"  Verified: session is valid.")
-            return
-        except Exception:
-            print(f"  Session expired. Re-authenticating...")
-        finally:
+        device_id = session.load_device_id()
+        if not device_id:
+            print("  No device_id in session — re-authenticating...")
+        else:
             try:
-                await client._connection.close()
-            except Exception:
-                pass
+                client = BridgeMaxClient(token=login_token, device_id=device_id)
+                await client.connect_and_login()
+                print(f"  Verified: session is valid.")
+                await client.disconnect()
+                return
+            except Exception as e:
+                print(f"  Session expired ({e}). Re-authenticating...")
 
     print(f"  Authenticating MAX session '{session_name}'...")
-    client = MaxClient()
+    print("  Using native TCP/SSL protocol (device_type=DESKTOP)")
+
+    client = NativeMaxAuth()
     await client.connect()
+    hello = await client.handshake()
 
     phone = input("  Enter phone number (e.g. +79991234567): ").strip()
 
-    try:
-        sms_token = await client.send_code(phone)
-    except KeyError:
-        await client._connection.close()
-        raise RuntimeError(
-            "MAX server rejected the auth request.\n"
-            "  Possible reasons:\n"
-            "    1. Too many recent auth attempts — wait 10–15 minutes and retry\n"
-            "    2. Not a Russian IP — MAX requires a Russian IP for phone auth\n"
-            "    3. Phone number is blocked or invalid"
-        )
-
+    sms_token = await client.send_code(phone)
     print("  SMS code sent!")
 
-    code = int(input("  Enter SMS code: ").strip())
-    account_data = await client.sign_in(sms_token, code)
+    code = input("  Enter SMS code: ").strip()
+    account_data = await client.sign_in(sms_token, int(code))
 
-    login_token = account_data["payload"]["tokenAttrs"]["LOGIN"]["token"]
-    profile = account_data["payload"].get("profile", {})
+    # Handle 2FA password challenge
+    password_challenge = account_data.get("passwordChallenge")
+    login_attrs = account_data.get("tokenAttrs", {}).get("LOGIN", {})
+
+    if password_challenge and not login_attrs:
+        raise RuntimeError(
+            "MAX account has 2FA enabled. "
+            "2FA password auth is not yet supported in native client."
+        )
+
+    login_token = login_attrs.get("token")
+    if not login_token:
+        raise RuntimeError(
+            f"No login token in response. Keys: {list(account_data.keys())}"
+        )
+
+    profile = account_data.get("profile", {})
     user_id = (
         profile.get("userId")
         or profile.get("id")
@@ -94,10 +97,10 @@ async def auth_max(session_name: str, sessions_dir: str):
     if user_id:
         user_id = int(user_id)
         print(f"  MAX user ID: {user_id}")
-    session.save(login_token, user_id=user_id)
+    session.save(login_token, user_id=user_id, device_id=client.device_id)
 
     print(f"  MAX session saved as '{session_name}'.")
-    await client.disconnect()
+    await client.close()
 
 
 async def main():
