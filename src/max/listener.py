@@ -189,15 +189,20 @@ class MaxListener:
     def _extract_name_from_names(names) -> str | None:
         """Pick the best display name from a list of Name objects.
 
-        MAX name entries have a `type` field (observed: "ONEME").
-        Uses .name (full display name) first, then first_name, last_name.
+        Prefers first_name + last_name combination (like Telegram does),
+        falls back to .name if both are empty.
         """
         if not names:
             return None
         for n in names:
-            display = n.name or n.first_name or n.last_name
-            if display:
-                return display
+            first = getattr(n, 'first_name', None) or ''
+            last = getattr(n, 'last_name', None) or ''
+            combined = f"{first} {last}".strip()
+            if combined:
+                return combined
+            fallback = getattr(n, 'name', None)
+            if fallback:
+                return fallback
         return None
 
     @staticmethod
