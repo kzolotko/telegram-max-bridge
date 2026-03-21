@@ -133,6 +133,30 @@ async def send_file_message(
     )
 
 
+async def send_multi_media_message(
+    client: "BridgeMaxClient",
+    chat_id: int,
+    attaches: list[dict],
+    caption: str = "",
+    elements: list[dict] | None = None,
+    reply_to: str | None = None,
+) -> dict:
+    """Send a single message with multiple attachments (photo/file/video mix)."""
+    message = {
+        "text": caption,
+        "cid": randint(1750000000000, 2000000000000),
+        "elements": elements or [],
+        "attaches": attaches,
+    }
+    if reply_to:
+        message["link"] = {"type": "REPLY", "messageId": str(reply_to)}
+
+    return await client.invoke_method(
+        opcode=64,
+        payload={"chatId": chat_id, "message": message, "notify": True},
+    )
+
+
 async def download_media(url: str) -> bytes:
     """Download media from a MAX CDN URL."""
     async with aiohttp.ClientSession() as session:

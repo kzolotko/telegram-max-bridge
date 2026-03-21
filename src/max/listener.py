@@ -318,59 +318,9 @@ class MaxListener:
                 reply_to = str(reply_to)
                 log.debug("MAX reply_to: %s", reply_to)
 
+        # ── Handle sticker (always single, return immediately) ──────────────
         for att in attaches:
-            att_type = att.get("_type", "")
-
-            if att_type in ("PHOTO", "VIDEO", "FILE", "AUDIO"):
-                media_url = att.get("url")
-                # PHOTO attachments use baseUrl (full CDN link) instead of url
-                if not media_url:
-                    media_url = att.get("baseUrl")
-                log.debug("MAX attachment: type=%s url=%s keys=%s", att_type, media_url, list(att.keys()))
-                media = None
-                if media_url:
-                    try:
-                        data = await download_media(media_url)
-                        event_type_map = {
-                            "PHOTO": ("photo", att.get("fileName", "photo.jpg"), "image/jpeg"),
-                            "VIDEO": ("video", att.get("fileName", "video.mp4"), "video/mp4"),
-                            "FILE": ("file", att.get("fileName", "file"), att.get("mimeType", "application/octet-stream")),
-                            "AUDIO": ("audio", att.get("fileName", "audio.mp3"), "audio/mpeg"),
-                        }
-                        evt_type, fname, mime = event_type_map[att_type]
-                        media = MediaInfo(data=data, filename=fname, mime_type=mime)
-                    except Exception as e:
-                        log.error("Failed to download %s from %s: %s", att_type, media_url, e, exc_info=True)
-                        evt_type = "text"
-
-                if media:
-                    await self.on_event(BridgeEvent(
-                        direction="max-to-tg",
-                        bridge_entry=bridge_entry,
-                        sender_display_name=sender_name,
-                        sender_user_id=sender_id,
-                        event_type=evt_type,
-                        text=text,
-                        media=media,
-                        reply_to_source_msg_id=reply_to,
-                        source_msg_id=msg_id,
-                        formatting=fmt,
-                    ))
-                else:
-                    label = att_type.capitalize()
-                    await self.on_event(BridgeEvent(
-                        direction="max-to-tg",
-                        bridge_entry=bridge_entry,
-                        sender_display_name=sender_name,
-                        sender_user_id=sender_id,
-                        event_type="text",
-                        text=f"{text or ''}\n[{label} — media download failed]".strip(),
-                        reply_to_source_msg_id=reply_to,
-                        source_msg_id=msg_id,
-                    ))
-                return
-
-            if att_type == "STICKER":
+            if att.get("_type") == "STICKER":
                 await self.on_event(BridgeEvent(
                     direction="max-to-tg",
                     bridge_entry=bridge_entry,
@@ -382,6 +332,88 @@ class MaxListener:
                     source_msg_id=msg_id,
                 ))
                 return
+
+        # ── Download ALL media attachments ───────────────────────────────────
+        _ATT_META = {
+            "PHOTO": ("photo", "photo.jpg",  "image/jpeg"),
+            "VIDEO": ("video", "video.mp4",  "video/mp4"),
+            "FILE":  ("file",  "file",        "application/octet-stream"),
+            "AUDIO": ("audio", "audio.mp3",  "audio/mpeg"),
+        }
+
+        downloaded: list[tuple[str, MediaInfo]] = []  # (evt_type, media)
+        failed_labels: list[str] = []
+
+        for att in attaches:
+            att_type = att.get("_type", "")
+            if att_type not in _ATT_META:
+                continue
+
+            media_url = att.get("url") or att.get("baseUrl")
+            log.debug("MAX attachment: type=%s url=%s", att_type, media_url)
+            default_evt, default_fname, default_mime = _ATT_META[att_type]
+            fname = att.get("fileName") or default_fname
+            mime  = att.get("mimeType") or default_mime
+
+            if media_url:
+                try:
+                    data = await download_media(media_url)
+                    downloaded.append((default_evt, MediaInfo(data=data, filename=fname, mime_type=mime)))
+                except Exception as e:
+                    log.error("Failed to download %s from %s: %s", att_type, media_url, e, exc_info=True)
+                    failed_labels.append(att_type.capitalize())
+            else:
+                failed_labels.append(att_type.capitalize())
+
+        # Emit download-failure events for any failed attachments
+        if failed_labels:
+            fail_text = f"{text or ''}\n" + "\n".join(f"[{l} — media download failed]" for l in failed_labels)
+            await self.on_event(BridgeEvent(
+                direction="max-to-tg",
+                bridge_entry=bridge_entry,
+                sender_display_name=sender_name,
+                sender_user_id=sender_id,
+                event_type="text",
+                text=fail_text.strip(),
+                reply_to_source_msg_id=reply_to,
+                source_msg_id=msg_id,
+            ))
+
+        if not downloaded:
+            # Nothing else to send (text-only path follows below)
+            pass
+        elif len(downloaded) == 1:
+            # Single attachment — keep original per-type event for backward compat
+            evt_type, media = downloaded[0]
+            await self.on_event(BridgeEvent(
+                direction="max-to-tg",
+                bridge_entry=bridge_entry,
+                sender_display_name=sender_name,
+                sender_user_id=sender_id,
+                event_type=evt_type,
+                text=text,
+                media=media,
+                reply_to_source_msg_id=reply_to,
+                source_msg_id=msg_id,
+                formatting=fmt,
+            ))
+            return
+        else:
+            # Multiple attachments — send as media_group
+            media_list = [mi for _, mi in downloaded]
+            await self.on_event(BridgeEvent(
+                direction="max-to-tg",
+                bridge_entry=bridge_entry,
+                sender_display_name=sender_name,
+                sender_user_id=sender_id,
+                event_type="media_group",
+                text=text,
+                media_list=media_list,
+                reply_to_source_msg_id=reply_to,
+                source_msg_id=msg_id,
+                formatting=fmt,
+            ))
+            return
 
         if text:
             await self.on_event(BridgeEvent(

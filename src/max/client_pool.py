@@ -2,11 +2,12 @@ import asyncio
 import logging
 
 from .bridge_client import BridgeMaxClient
-from ..types import AppConfig, UserMapping
+from ..types import AppConfig, MediaInfo, UserMapping
 from .session import MaxSession
 from .media import (
     get_upload_url, upload_photo_to_url, send_photo_message,
     get_file_upload_url, upload_file_to_url, send_file_message,
+    send_multi_media_message,
 )
 
 
@@ -315,6 +316,53 @@ class MaxClientPool:
                     await self._reconnect(uid)
                 else:
                     log.error("send_file failed after %d attempts: %s", attempt + 1, e)
+                    return None
+
+    async def send_media_multi(
+        self,
+        max_user_id: int | None,
+        chat_id: int,
+        media_items: list[MediaInfo],
+        caption: str = "",
+        reply_to: str | None = None,
+        elements: list[dict] | None = None,
+    ) -> str | None:
+        """Send a single MAX message with multiple attachments (photo/video/file mix)."""
+        uid = self._resolve_user_id(max_user_id)
+        if uid is None:
+            return None
+
+        for attempt in range(_MAX_RETRIES + 1):
+            client = await self._get_live_client(uid)
+            if not client:
+                log.error("send_media_multi: no live client for user %s", uid)
+                return None
+            try:
+                # Upload each item and build the attaches list
+                attaches: list[dict] = []
+                for mi in media_items:
+                    if mi.mime_type.startswith("image/"):
+                        upload_url = await get_upload_url(client)
+                        token = await upload_photo_to_url(upload_url, mi.data, mi.filename)
+                        attaches.append({"_type": "PHOTO", "photoToken": token})
+                    else:
+                        upload_url = await get_file_upload_url(client)
+                        file_info = await upload_file_to_url(
+                            upload_url, mi.data, mi.filename, mi.mime_type
+                        )
+                        attaches.append(file_info)
+
+                response = await send_multi_media_message(
+                    client, chat_id, attaches, caption, elements, reply_to
+                )
+                return self._extract_msg_id(response)
+            except Exception as e:
+                if attempt < _MAX_RETRIES:
+                    log.warning("send_media_multi failed (attempt %d): %s — reconnecting",
+                                attempt + 1, e)
+                    await self._reconnect(uid)
+                else:
+                    log.error("send_media_multi failed after %d attempts: %s", attempt + 1, e)
                     return None
 
     async def stop(self):

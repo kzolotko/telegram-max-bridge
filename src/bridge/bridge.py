@@ -82,7 +82,16 @@ class Bridge:
         if event.reply_to_source_msg_id is not None:
             reply_to = self.store.get_max_msg_id(entry.name, int(event.reply_to_source_msg_id))
 
-        if event.event_type == "text":
+        if event.event_type == "media_group" and event.media_list:
+            max_msg_id = await self.max_pool.send_media_multi(
+                max_user_id, max_chat_id, event.media_list,
+                text, reply_to, elements=max_elements,
+            )
+            if max_msg_id and event.source_msg_id is not None:
+                self.store.store(entry.name, int(event.source_msg_id), max_msg_id)
+                self.mirrors.mark_max(max_msg_id)
+
+        elif event.event_type == "text":
             max_msg_id = await self.max_pool.send_text(
                 max_user_id, max_chat_id, text, reply_to, elements=max_elements,
             )
@@ -193,7 +202,38 @@ class Bridge:
             reply_to = self.store.get_tg_msg_id(entry.name, str(event.reply_to_source_msg_id))
 
         
-        if event.event_type == "text":
+        if event.event_type == "media_group" and event.media_list:
+            from pyrogram.types import (
+                InputMediaPhoto, InputMediaVideo,
+                InputMediaAudio, InputMediaDocument,
+            )
+            media_inputs = []
+            for i, mi in enumerate(event.media_list):
+                buf = io.BytesIO(mi.data)
+                buf.name = mi.filename
+                # Caption and formatting only on the first item
+                cap = (MIRROR_MARKER + (html_text if has_html else text)) if i == 0 else None
+                pm = (tg_enums.ParseMode.HTML if has_html else tg_enums.ParseMode.DISABLED) if i == 0 else tg_enums.ParseMode.DISABLED
+                if mi.mime_type.startswith("image/"):
+                    media_inputs.append(InputMediaPhoto(buf, caption=cap, parse_mode=pm))
+                elif mi.mime_type.startswith("video/"):
+                    media_inputs.append(InputMediaVideo(buf, caption=cap, parse_mode=pm))
+                elif mi.mime_type.startswith("audio/"):
+                    media_inputs.append(InputMediaAudio(buf, caption=cap, parse_mode=pm))
+                else:
+                    media_inputs.append(InputMediaDocument(buf, caption=cap, parse_mode=pm))
+
+            if media_inputs:
+                msgs = await client.send_media_group(
+                    tg_chat_id, media_inputs,
+                    reply_to_message_id=reply_to,
+                )
+                if msgs and event.source_msg_id is not None:
+                    self.store.store(entry.name, msgs[0].id, str(event.source_msg_id))
+                for msg in (msgs or []):
+                    self.mirrors.mark_tg(msg.id)
+
+        elif event.event_type == "text":
             send_text = MIRROR_MARKER + (html_text if has_html else text)
             msg = await client.send_message(
                 tg_chat_id, send_text,
