@@ -1,9 +1,9 @@
 # Telegram ↔ MAX Bridge — Chat Configuration
 #
 # Prerequisites:
-#   1. Set up credentials first:  python -m src.setup credentials
-#   2. Then configure bridges:    python -m src.setup bridges
-#   Or run full wizard:           python -m src.setup
+#   1. Set up credentials first:  ./bridge.sh setup credentials
+#   2. Then configure bridges:    ./bridge.sh setup bridges
+#   Or run full wizard:           ./bridge.sh setup
 #
 # Note: Telegram API credentials (api_id, api_hash) live in credentials.yaml
 
@@ -34,7 +34,7 @@
 #
 #   telegram_user_id  — message @userinfobot directly, it replies with your ID.
 #
-#   max_user_id       — shown in `python -m src.auth` output after MAX login,
+#   max_user_id       — shown in `./bridge.sh auth` output after MAX login,
 #                       or find viewerId in browser dev tools at web.max.ru.
 #
 # user.name must be alphanumeric — it is used to build session filenames

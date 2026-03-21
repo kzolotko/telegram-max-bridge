@@ -14,7 +14,6 @@ import re
 import sys
 from pathlib import Path
 
-import aiohttp
 import yaml
 from pyrogram import Client
 from pyrogram.enums import ChatType
@@ -74,52 +73,6 @@ def parse_max_chat_id(text: str) -> int:
     )
 
 
-# ── Geo-check ────────────────────────────────────────────────────────────────
-
-async def check_geo() -> bool:
-    """Returns True if Russian IP, False otherwise."""
-    print_section("Checking your IP location")
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                "https://api.ipify.org?format=json",
-                timeout=aiohttp.ClientTimeout(total=5)
-            ) as r:
-                ip = (await r.json()).get("ip", "?")
-
-            async with session.get(
-                f"https://ipapi.co/{ip}/json/",
-                timeout=aiohttp.ClientTimeout(total=5)
-            ) as r:
-                geo = await r.json()
-
-        country_code = geo.get("country_code", "?")
-        country = geo.get("country_name", "?")
-        city = geo.get("city", "?")
-        print(f"  IP: {ip}  |  Country: {country} ({country_code})  |  City: {city}")
-
-        if country_code != "RU":
-            print()
-            print("  ⚠️  WARNING: Not a Russian IP address.")
-            print("  MAX requires a Russian IP for phone-based authentication.")
-            print("  Options:")
-            print("    1. Disable VPN and retry")
-            print("    2. Enable a VPN with a Russian exit node")
-            print("    3. Run this on a machine with a Russian IP")
-            print()
-            if not confirm("Continue anyway? (auth may fail)"):
-                sys.exit(1)
-            return False
-        else:
-            print("  ✅ Russian IP — MAX phone auth should work.")
-            return True
-    except Exception as e:
-        print(f"  ⚠️  Could not determine IP location: {e}")
-        if not confirm("Continue without geo check?"):
-            sys.exit(1)
-        return True
-
-
 # ── Mode: credentials ────────────────────────────────────────────────────────
 
 async def setup_credentials():
@@ -172,9 +125,6 @@ async def setup_bridges():
         if not confirm(f"Overwrite {CONFIG_FILE}?"):
             print("  Keeping existing config.")
             return
-
-    # Geo-check (needed for MAX phone auth)
-    await check_geo()
 
     # Authenticate users
     print_section("User Accounts")
@@ -244,6 +194,7 @@ async def auth_one_user(
     me = await tg_client.get_me()
     telegram_user_id = me.id
     print(f"  ✅ Telegram: @{me.username or me.first_name} (ID: {telegram_user_id})")
+    await tg_client.stop()
 
     # ── MAX ───────────────────────────────────────────────────────────────────
     print()
@@ -276,8 +227,6 @@ async def auth_one_user(
     else:
         max_user_id = await _do_max_auth(name, sessions_dir)
 
-    await tg_client.stop()
-
     return {
         "name": name,
         "telegram_user_id": telegram_user_id,
@@ -292,10 +241,27 @@ async def _do_max_auth(name: str, sessions_dir: str) -> int:
     print("  Using native TCP/SSL protocol (device_type=DESKTOP)")
     client = NativeMaxAuth()
     await client.connect()
-    await client.handshake()
+    hello = await client.handshake()
+    hello_p = hello.get("payload", {})
+    phone_auth = hello_p.get("phone-auth-enabled")
+    location = hello_p.get("location", "?")
+    print(f"  Connected: location={location}, phone-auth={phone_auth}")
+    if phone_auth is False:
+        print("  ⚠️  Server reports phone-auth DISABLED for this connection")
 
     phone = prompt("MAX phone number (e.g. +79991234567)")
-    sms_token = await client.send_code(phone)
+
+    try:
+        sms_token = await client.send_code(phone)
+    except RuntimeError as e:
+        await client.close()
+        if "limit.violate" in str(e):
+            print()
+            print("  ⛔ MAX: слишком много попыток авторизации на этот номер.")
+            print("  Сервер временно заблокировал отправку SMS.")
+            print("  Подождите 1-2 часа и попробуйте снова: ./bridge.sh setup bridges")
+            raise SystemExit(1) from None
+        raise
 
     print("  SMS code sent!")
     code = prompt("Enter SMS code")
@@ -303,7 +269,8 @@ async def _do_max_auth(name: str, sessions_dir: str) -> int:
 
     # Handle 2FA
     password_challenge = account_data.get("passwordChallenge")
-    login_attrs = account_data.get("tokenAttrs", {}).get("LOGIN", {})
+    token_attrs = account_data.get("tokenAttrs", {})
+    login_attrs = token_attrs.get("LOGIN", {})
 
     if password_challenge and not login_attrs:
         await client.close()
@@ -466,6 +433,13 @@ def write_config(bridges: list[dict], output_path: str = CONFIG_FILE):
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 async def main():
+    import logging
+    logging.basicConfig(
+        level=logging.WARNING,
+        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
     args = sys.argv[1:] if len(sys.argv) > 1 else []
     mode = args[0] if args else None
 

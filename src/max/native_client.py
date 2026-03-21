@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import socket
 import ssl
 from random import choice, randint
 from typing import Any
@@ -72,10 +71,15 @@ def _default_user_agent() -> dict[str, Any]:
 
 
 class NativeMaxAuth:
-    """Minimal native TCP/SSL client for MAX phone authentication."""
+    """Minimal native TCP/SSL client for MAX phone authentication.
+
+    Uses asyncio.open_connection with SSL for fully async I/O —
+    no threads, no executor, no SSL socket thread-safety issues.
+    """
 
     def __init__(self) -> None:
-        self._sock: socket.socket | None = None
+        self._reader: asyncio.StreamReader | None = None
+        self._writer: asyncio.StreamWriter | None = None
         self._seq = 0
         self._pending: dict[int, asyncio.Future[dict[str, Any]]] = {}
         self._recv_task: asyncio.Task[Any] | None = None
@@ -89,22 +93,19 @@ class NativeMaxAuth:
     # ── public API ──────────────────────────────────────────────
 
     async def connect(self) -> None:
-        """Establish TCP/SSL connection to api.oneme.ru:443."""
+        """Establish async TCP/SSL connection to api.oneme.ru:443."""
         ctx = ssl.create_default_context()
         ctx.set_ciphers("DEFAULT")
         ctx.check_hostname = True
         ctx.verify_mode = ssl.CERT_REQUIRED
         ctx.minimum_version = ssl.TLSVersion.TLSv1_2
 
-        loop = asyncio.get_running_loop()
-        raw = await loop.run_in_executor(
-            None, lambda: socket.create_connection((HOST, PORT))
+        self._reader, self._writer = await asyncio.open_connection(
+            HOST, PORT, ssl=ctx,
         )
-        self._sock = ctx.wrap_socket(raw, server_hostname=HOST)
-        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
         self._connected = True
         self._recv_task = asyncio.create_task(self._recv_loop())
-        log.info("Connected to %s:%s (native TCP/SSL)", HOST, PORT)
+        log.info("Connected to %s:%s (native async TCP/SSL)", HOST, PORT)
 
     async def handshake(self) -> dict[str, Any]:
         """Send hello/session-init packet (opcode 6)."""
@@ -120,6 +121,8 @@ class NativeMaxAuth:
             "Handshake OK: location=%s phone-auth-enabled=%s",
             location, phone_auth,
         )
+        if phone_auth is False:
+            log.warning("Server reports phone-auth DISABLED — SMS auth may fail")
         return resp
 
     async def send_code(self, phone: str) -> str:
@@ -133,8 +136,10 @@ class NativeMaxAuth:
         p = resp.get("payload", {})
 
         if p.get("error"):
+            log.error("Full send_code response: %s", p)
             raise RuntimeError(
-                f"MAX auth error: {p.get('error')} — {p.get('message', '')}"
+                f"MAX auth error: {p.get('error')} — {p.get('message', '')} "
+                f"(full response: {p})"
             )
 
         token = p.get("token")
@@ -201,12 +206,14 @@ class NativeMaxAuth:
                 await self._recv_task
             except (asyncio.CancelledError, Exception):
                 pass
-        if self._sock:
+        if self._writer:
             try:
-                self._sock.close()
+                self._writer.close()
+                await self._writer.wait_closed()
             except Exception:
                 pass
-            self._sock = None
+            self._writer = None
+        self._reader = None
         for fut in self._pending.values():
             if not fut.done():
                 fut.cancel()
@@ -261,35 +268,17 @@ class NativeMaxAuth:
 
     # ── transport ────────────────────────────────────────────────
 
-    def _recv_exactly(self, n: int) -> bytes:
-        assert self._sock is not None
-        buf = bytearray()
-        while len(buf) < n:
-            chunk = self._sock.recv(n - len(buf))
-            if not chunk:
-                return bytes(buf)
-            buf.extend(chunk)
-        return bytes(buf)
-
     async def _recv_loop(self) -> None:
-        loop = asyncio.get_running_loop()
-        while self._connected and self._sock:
+        """Async receive loop using StreamReader — no threads needed."""
+        while self._connected and self._reader:
             try:
-                header = await loop.run_in_executor(
-                    None, lambda: self._recv_exactly(10)
-                )
-                if not header or len(header) < 10:
-                    log.warning("Connection closed by server")
-                    self._connected = False
-                    break
+                header = await self._reader.readexactly(10)
 
                 packed_len = int.from_bytes(header[6:10], "big", signed=False)
                 payload_length = packed_len & 0xFFFFFF
 
                 if payload_length > 0:
-                    payload_data = await loop.run_in_executor(
-                        None, lambda: self._recv_exactly(payload_length)
-                    )
+                    payload_data = await self._reader.readexactly(payload_length)
                 else:
                     payload_data = b""
 
@@ -299,12 +288,20 @@ class NativeMaxAuth:
                     continue
 
                 seq_key = data.get("seq")
+                opcode_val = data.get("opcode")
+                log.debug("Received packet: opcode=%s seq=%s (pending keys=%s)",
+                         opcode_val, seq_key, list(self._pending.keys()))
                 if isinstance(seq_key, int):
                     fut = self._pending.get(seq_key % 256)
                     if fut and not fut.done():
+                        log.debug("Resolving future for seq=%d", seq_key % 256)
                         fut.set_result(data)
 
             except asyncio.CancelledError:
+                break
+            except asyncio.IncompleteReadError:
+                log.warning("Connection closed by server")
+                self._connected = False
                 break
             except Exception:
                 log.exception("Error in native recv loop")
@@ -313,7 +310,7 @@ class NativeMaxAuth:
     async def _send_and_wait(self, opcode: int,
                               payload: dict[str, Any],
                               timeout: float = 15.0) -> dict[str, Any]:
-        if not self._connected or not self._sock:
+        if not self._connected or not self._writer:
             raise RuntimeError("Not connected")
 
         self._seq += 1
@@ -324,8 +321,17 @@ class NativeMaxAuth:
         fut: asyncio.Future[dict[str, Any]] = loop.create_future()
         self._pending[seq % 256] = fut
 
+        log.debug("Sending opcode=%d seq=%d (pending key=%d)", opcode, seq, seq % 256)
+
         try:
-            await loop.run_in_executor(None, lambda: self._sock.sendall(packet))
-            return await asyncio.wait_for(fut, timeout=timeout)
+            self._writer.write(packet)
+            await self._writer.drain()
+            log.debug("Packet sent, waiting for response (timeout=%ds)...", timeout)
+            result = await asyncio.wait_for(fut, timeout=timeout)
+            log.debug("Got response for opcode=%d seq=%d", opcode, seq)
+            return result
+        except asyncio.TimeoutError:
+            log.error("Timeout waiting for response to opcode=%d seq=%d", opcode, seq)
+            raise
         finally:
             self._pending.pop(seq % 256, None)

@@ -3,6 +3,7 @@
 .gitignore
 
 # Secrets — never bake these into the image
+credentials.yaml
 config.yaml
 sessions/
 *.session
@@ -29,8 +30,8 @@ Thumbs.db
 .vscode/
 .claude/
 
-# Docs & utility scripts (not needed in container)
+# Docs & scripts (not needed in container)
 README.md
 TASKS.md
-diagnose.py
-extract_max_token.js
+*.example.yaml
+bridge.sh

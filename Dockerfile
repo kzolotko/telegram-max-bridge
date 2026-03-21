@@ -18,4 +18,5 @@ COPY src/ ./src/
 # Sessions directory is mounted at runtime — never baked into the image
 VOLUME ["/app/sessions"]
 
+# Default: run the bridge. Override with docker compose run for setup/auth.
 CMD ["python", "-u", "-m", "src"]
