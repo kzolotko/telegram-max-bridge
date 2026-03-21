@@ -6,7 +6,9 @@ services:
     restart: unless-stopped
 
     volumes:
-      # config.yaml is read-only — edit it on the host, then restart the container
+      # credentials.yaml — Telegram API credentials (read-only)
+      - ./credentials.yaml:/app/credentials.yaml:ro
+      # config.yaml — bridge configuration (read-only)
       - ./config.yaml:/app/config.yaml:ro
       # sessions/ holds Pyrogram and MAX session files — must persist across restarts
       - ./sessions:/app/sessions
@@ -17,7 +19,3 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-
-    # Optional: override config path via environment variable
-    # environment:
-    #   - CONFIG_PATH=/app/config.yaml

@@ -4,6 +4,7 @@ __pycache__/
 .venv/
 venv/
 config.yaml
+credentials.yaml
 sessions/
 *.session
 *.max_session

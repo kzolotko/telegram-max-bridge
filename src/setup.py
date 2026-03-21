@@ -1,10 +1,12 @@
 """
 Interactive setup wizard for Telegram ↔ MAX Bridge.
 
-Guides you through authentication and generates config.yaml automatically.
-No need to manually find user IDs or chat IDs beforehand.
+Three modes:
+  python -m src.setup               — full wizard (credentials + users + bridges)
+  python -m src.setup credentials   — set up Telegram API credentials only (one-time)
+  python -m src.setup bridges       — configure users and chat bridges (requires credentials)
 
-Usage: python -m src.setup
+Usage: python -m src.setup [credentials|bridges]
 """
 
 import asyncio
@@ -20,9 +22,14 @@ from pyrogram.enums import ChatType
 from .max.native_client import NativeMaxAuth
 from .max.bridge_client import BridgeMaxClient
 from .max.session import MaxSession
+from .config import load_credentials
 
 
 SEP = "─" * 60
+
+CREDENTIALS_FILE = "credentials.yaml"
+CONFIG_FILE = "config.yaml"
+SESSIONS_DIR = "sessions"
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -67,11 +74,11 @@ def parse_max_chat_id(text: str) -> int:
     )
 
 
-# ── Step 0: Geo-check ─────────────────────────────────────────────────────────
+# ── Geo-check ────────────────────────────────────────────────────────────────
 
 async def check_geo() -> bool:
     """Returns True if Russian IP, False otherwise."""
-    print_section("Step 0: Checking your IP location")
+    print_section("Checking your IP location")
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(
@@ -113,18 +120,93 @@ async def check_geo() -> bool:
         return True
 
 
-# ── Step 1: Telegram credentials ─────────────────────────────────────────────
+# ── Mode: credentials ────────────────────────────────────────────────────────
 
-def collect_tg_credentials() -> tuple[int, str]:
-    print_section("Step 1: Telegram API credentials")
+async def setup_credentials():
+    """Set up Telegram API credentials (api_id + api_hash). One-time."""
+    print_section("Telegram API Credentials")
     print("  Get these from https://my.telegram.org → API development tools")
     print()
+
+    creds_path = Path(CREDENTIALS_FILE)
+    if creds_path.exists():
+        print(f"  ⚠️  {CREDENTIALS_FILE} already exists.")
+        if not confirm(f"Overwrite {CREDENTIALS_FILE}?"):
+            print("  Keeping existing credentials.")
+            return
+
     api_id = int(prompt("api_id (number)"))
     api_hash = prompt("api_hash (32-char hex string)")
-    return api_id, api_hash
+
+    creds = {
+        "api_id": api_id,
+        "api_hash": api_hash,
+    }
+    creds_path.write_text(
+        "# Telegram API credentials — obtained once from https://my.telegram.org\n"
+        "# This file is created by: python -m src.setup credentials\n"
+        + yaml.dump(creds, default_flow_style=False)
+    )
+    print(f"\n  ✅ Credentials saved to {CREDENTIALS_FILE}")
 
 
-# ── Step 2: User authentication ───────────────────────────────────────────────
+# ── Mode: bridges (users + chat configuration) ───────────────────────────────
+
+async def setup_bridges():
+    """Configure user accounts and chat bridges. Requires credentials.yaml."""
+
+    # Load credentials (must exist)
+    try:
+        creds = load_credentials()
+    except FileNotFoundError as e:
+        print(f"\n  ❌ {e}")
+        print("  Run 'python -m src.setup credentials' first.")
+        sys.exit(1)
+
+    api_id = creds["api_id"]
+    api_hash = creds["api_hash"]
+
+    config_path = Path(CONFIG_FILE)
+    if config_path.exists():
+        print(f"\n  ⚠️  {CONFIG_FILE} already exists.")
+        if not confirm(f"Overwrite {CONFIG_FILE}?"):
+            print("  Keeping existing config.")
+            return
+
+    # Geo-check (needed for MAX phone auth)
+    await check_geo()
+
+    # Authenticate users
+    print_section("User Accounts")
+    print("  Configure the user account(s) that will power the bridge.")
+    print("  Each user needs a Telegram and MAX account.")
+    print()
+
+    users = []
+    while True:
+        user = await auth_one_user(api_id, api_hash, SESSIONS_DIR)
+        users.append(user)
+        print()
+        if not confirm("Add another user?"):
+            break
+
+    # Configure bridges
+    bridges = await collect_bridges(users, api_id, api_hash, SESSIONS_DIR)
+
+    # Write config.yaml (bridges only — no credentials)
+    print_section("Writing config.yaml")
+    write_config(bridges, CONFIG_FILE)
+
+    print()
+    print("=" * 60)
+    print("Setup complete!")
+    print()
+    print("Start the bridge:")
+    print("  python -m src")
+    print("=" * 60)
+
+
+# ── User authentication ──────────────────────────────────────────────────────
 
 async def auth_one_user(
     api_id: int,
@@ -264,7 +346,7 @@ def _extract_max_user_id(profile: dict, session: MaxSession) -> int | None:
     return session.load_user_id()
 
 
-# ── Step 3: Bridge pairs ──────────────────────────────────────────────────────
+# ── Bridge configuration ─────────────────────────────────────────────────────
 
 async def collect_bridges(
     users: list[dict],
@@ -272,7 +354,7 @@ async def collect_bridges(
     api_hash: str,
     sessions_dir: str,
 ) -> list[dict]:
-    print_section("Step 3: Configure chat bridges")
+    print_section("Configure Chat Bridges")
 
     # Load TG dialogs once (using first user's client)
     primary = users[0]
@@ -359,19 +441,9 @@ async def collect_bridges(
     return bridges
 
 
-# ── Step 4: Write config.yaml ─────────────────────────────────────────────────
-
-def write_config(
-    api_id: int,
-    api_hash: str,
-    bridges: list[dict],
-    output_path: str = "config.yaml",
-):
-    config = {
-        "api_id": api_id,
-        "api_hash": api_hash,
-        "bridges": [],
-    }
+def write_config(bridges: list[dict], output_path: str = CONFIG_FILE):
+    """Write config.yaml with bridges only (no credentials)."""
+    config = {"bridges": []}
 
     for b in bridges:
         user = b["user"]
@@ -394,69 +466,31 @@ def write_config(
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 async def main():
+    args = sys.argv[1:] if len(sys.argv) > 1 else []
+    mode = args[0] if args else None
+
     print("=" * 60)
-    print("Telegram ↔ MAX Bridge — Setup Wizard")
+    print("Telegram ↔ MAX Bridge — Setup")
     print("=" * 60)
-    print()
-    print("This wizard will:")
-    print("  1. Check your IP location (MAX requires Russian IP)")
-    print("  2. Ask for your Telegram API credentials")
-    print("  3. Authenticate your user accounts (TG + MAX)")
-    print("  4. Let you select which chats to bridge")
-    print("  5. Generate config.yaml automatically")
-    print()
 
-    sessions_dir = "sessions"
-    output_path = "config.yaml"
+    if mode == "credentials":
+        await setup_credentials()
+    elif mode == "bridges":
+        await setup_bridges()
+    elif mode is None:
+        # Full wizard: credentials first, then bridges
+        if not Path(CREDENTIALS_FILE).exists():
+            await setup_credentials()
+        else:
+            print(f"\n  ✅ {CREDENTIALS_FILE} already exists.")
+            if confirm("Re-configure credentials?"):
+                await setup_credentials()
 
-    # Check if config already exists
-    if Path(output_path).exists():
-        print(f"  ⚠️  {output_path} already exists.")
-        if not confirm(f"Overwrite {output_path}?"):
-            print("  Keeping existing config. You can still re-run auth with: python -m src.auth")
-            sys.exit(0)
-
-    # Step 0
-    await check_geo()
-
-    # Step 1
-    print_section("Step 1: Telegram API credentials")
-    print("  Get these from https://my.telegram.org → API development tools")
-    print()
-    api_id = int(prompt("api_id (number)"))
-    api_hash = prompt("api_hash (32-char hex string)")
-
-    # Step 2
-    print_section("Step 2: User accounts")
-    print("  Configure the user account(s) that will power the bridge.")
-    print("  Each user needs a Telegram and MAX account.")
-    print()
-
-    users = []
-    while True:
-        user = await auth_one_user(api_id, api_hash, sessions_dir)
-        users.append(user)
-        print()
-        if not confirm("Add another user?"):
-            break
-
-    # Step 3
-    bridges = await collect_bridges(users, api_id, api_hash, sessions_dir)
-
-    # Step 4
-    print_section("Step 4: Writing config.yaml")
-    write_config(api_id, api_hash, bridges, output_path)
-
-    print()
-    print("=" * 60)
-    print("Setup complete!")
-    print()
-    print("Start the bridge:")
-    print("  python -m src")
-    print()
-    print("Or with Docker:")
-    print("  docker compose up")
-    print("=" * 60)
+        await setup_bridges()
+    else:
+        print(f"\n  Unknown mode: {mode}")
+        print("  Usage: python -m src.setup [credentials|bridges]")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

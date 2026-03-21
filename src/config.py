@@ -6,18 +6,56 @@ import yaml
 from .types import AppConfig, BridgeEntry, UserMapping
 
 
-def load_config(config_path: str | None = None) -> AppConfig:
+def load_credentials(credentials_path: str | None = None) -> dict:
+    """Load Telegram API credentials from credentials.yaml."""
+    path = Path(credentials_path or "credentials.yaml")
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Credentials file not found: {path}\n"
+            f"Run 'python -m src.setup credentials' to create it,\n"
+            f"or copy credentials.example.yaml to credentials.yaml."
+        )
+
+    with open(path) as f:
+        raw = yaml.safe_load(f) or {}
+
+    if not raw.get("api_id"):
+        raise ValueError("Missing api_id in credentials.yaml")
+    if not raw.get("api_hash"):
+        raise ValueError("Missing api_hash in credentials.yaml")
+
+    return {"api_id": int(raw["api_id"]), "api_hash": str(raw["api_hash"])}
+
+
+def load_config(
+    config_path: str | None = None,
+    credentials_path: str | None = None,
+) -> AppConfig:
+    """Load bridge config + credentials from separate files.
+
+    For backwards compatibility, if config.yaml still contains api_id/api_hash
+    (old single-file format), those values are used as fallback when
+    credentials.yaml is missing.
+    """
     path = Path(config_path or "config.yaml")
     if not path.exists():
         raise FileNotFoundError(f"Config file not found: {path}")
 
     with open(path) as f:
-        raw = yaml.safe_load(f)
+        raw = yaml.safe_load(f) or {}
 
-    if not raw.get("api_id"):
-        raise ValueError("Missing api_id (Telegram API ID from my.telegram.org)")
-    if not raw.get("api_hash"):
-        raise ValueError("Missing api_hash (Telegram API hash from my.telegram.org)")
+    # Try loading credentials from the dedicated file first.
+    # Fall back to config.yaml values for backwards compatibility.
+    try:
+        creds = load_credentials(credentials_path)
+    except FileNotFoundError:
+        if raw.get("api_id") and raw.get("api_hash"):
+            creds = {"api_id": int(raw["api_id"]), "api_hash": str(raw["api_hash"])}
+        else:
+            raise FileNotFoundError(
+                "credentials.yaml not found and config.yaml has no api_id/api_hash.\n"
+                "Run 'python -m src.setup credentials' to set up Telegram API credentials."
+            )
 
     bridges = []
     for i, b in enumerate(raw.get("bridges", [])):
@@ -44,8 +82,8 @@ def load_config(config_path: str | None = None) -> AppConfig:
         raise ValueError("At least one bridge entry is required")
 
     return AppConfig(
-        api_id=raw["api_id"],
-        api_hash=raw["api_hash"],
+        api_id=creds["api_id"],
+        api_hash=creds["api_hash"],
         bridges=bridges,
     )
 

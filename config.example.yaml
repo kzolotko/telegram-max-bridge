@@ -1,19 +1,11 @@
-# Telegram ↔ MAX Bridge — Example Configuration
+# Telegram ↔ MAX Bridge — Chat Configuration
 #
-# Copy to config.yaml and fill in your values:
-#   cp config.example.yaml config.yaml
+# Prerequisites:
+#   1. Set up credentials first:  python -m src.setup credentials
+#   2. Then configure bridges:    python -m src.setup bridges
+#   Or run full wizard:           python -m src.setup
 #
-# Then authenticate accounts:
-#   python -m src.auth
-#
-# Then run:
-#   python -m src
-
-# ─── Telegram API credentials ─────────────────────────────────────────────────
-# Get from: https://my.telegram.org → API development tools
-# One application is shared by all user accounts in this config.
-api_id: 12345678
-api_hash: "0123456789abcdef0123456789abcdef"
+# Note: Telegram API credentials (api_id, api_hash) live in credentials.yaml
 
 # ─── Bridge entries ────────────────────────────────────────────────────────────
 # Each entry connects one Telegram chat ↔ one MAX chat via one user's accounts.

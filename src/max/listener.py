@@ -39,6 +39,14 @@ class MaxListener:
         self._monitor_task: asyncio.Task | None = None
         self._name_cache: dict[int, str] = {}  # max_user_id -> display name
 
+        # Pre-populate name cache with known bridge users.
+        # For these users the bridge routes via their own TG account,
+        # so the display name is rarely shown — but having it cached
+        # avoids any network call and eliminates the delay entirely.
+        for entry in config.bridges:
+            u = entry.user
+            self._name_cache[u.max_user_id] = u.name
+
     async def start(self) -> int:
         session = MaxSession(self.user.max_session, self.config.sessions_dir)
         if not session.exists():
@@ -103,19 +111,28 @@ class MaxListener:
             except Exception:
                 pass
 
-    async def _resolve_sender_name(self, sender_id: int) -> str:
-        """Resolve display name for a MAX user ID, with caching.
+    def _resolve_sender_name(self, sender_id: int) -> str:
+        """Resolve display name for a MAX user ID — instant, no network calls.
 
-        Uses a short timeout to avoid blocking message delivery —
-        pymax's CONTACT_INFO request often times out on the shared connection.
-        Falls back to 'User:<id>' immediately if name can't be resolved quickly.
+        Known bridge users are pre-populated from config.
+        Unknown users get a 'User:<id>' fallback. A background task tries
+        to resolve the real name for next time, but never blocks delivery.
         """
         if sender_id in self._name_cache:
             return self._name_cache[sender_id]
+        # Immediate fallback — never block message delivery.
+        fallback = f"User:{sender_id}"
+        self._name_cache[sender_id] = fallback
+        # Try to resolve the real name in background for future messages.
+        asyncio.create_task(self._bg_resolve_name(sender_id))
+        return fallback
+
+    async def _bg_resolve_name(self, sender_id: int):
+        """Background task: try to resolve real name, update cache silently."""
         try:
             users = await asyncio.wait_for(
                 self.client.get_users([sender_id]),
-                timeout=3.0,
+                timeout=5.0,
             )
             if users:
                 u = users[0]
@@ -128,29 +145,23 @@ class MaxListener:
                     name = u.first_name
                 if name:
                     self._name_cache[sender_id] = name
-                    return name
-        except Exception as e:
-            log.debug("Could not resolve MAX user %s: %s", sender_id, e)
-        fallback = f"User:{sender_id}"
-        self._name_cache[sender_id] = fallback
-        return fallback
+                    log.debug("Resolved MAX user %s → %s", sender_id, name)
+        except Exception:
+            pass  # Keep fallback; will retry on next unknown sender
 
     async def _handle_packet(self, data: dict[str, Any]):
         try:
             opcode = data.get("opcode", 0)
-            log.debug("RAW PACKET opcode=%s keys=%s", opcode, list((data.get("payload") or {}).keys()))
 
             # PyMax uses Opcode enum values (ints) for opcodes
             if opcode == 128:  # NOTIF_MESSAGE
                 await self._handle_message(data)
             elif opcode == 67:  # MSG_EDIT notification
                 await self._handle_edited_message(data)
-            elif opcode == 66:  # MSG_DELETE notification
+            elif opcode == 66:  # MSG_DELETE
                 await self._handle_deleted_message(data)
             elif opcode == 142:  # NOTIF_MSG_DELETE
-                await self._handle_deleted_message_notif(data)
-            elif opcode not in (0, 1, 2, 3, 4, 5, 130, 132):
-                log.debug("Unhandled opcode: %s", opcode)
+                await self._handle_deleted_message(data)
         except Exception as e:
             log.error("Error handling packet (opcode=%s): %s", data.get("opcode"), e, exc_info=True)
 
@@ -180,7 +191,7 @@ class MaxListener:
         if not bridge_entry:
             return
 
-        sender_name = await self._resolve_sender_name(sender_id)
+        sender_name = self._resolve_sender_name(sender_id)
         text = message.get("text")
         attaches = message.get("attaches", [])
 
@@ -304,37 +315,11 @@ class MaxListener:
         ))
 
     async def _handle_deleted_message(self, packet: dict):
-        """Handle MSG_DELETE (opcode 66) — server-side delete confirmation."""
+        """Handle MSG_DELETE (opcode 66) and NOTIF_MSG_DELETE (opcode 142)."""
         payload = packet.get("payload", {})
         chat_id = payload.get("chatId")
         message_ids = payload.get("messageIds", [])
-        log.info("MAX delete (op=66): chat=%s ids=%s", chat_id, message_ids)
-        if not chat_id:
-            return
-
-        bridge_entry = self.lookup.get_primary_by_max(chat_id)
-        if not bridge_entry:
-            return
-
-        for mid in message_ids:
-            await self.on_event(BridgeEvent(
-                direction="max-to-tg",
-                bridge_entry=bridge_entry,
-                sender_display_name="Unknown",
-                event_type="delete",
-                delete_source_msg_id=str(mid),
-                source_msg_id=str(mid),
-            ))
-
-    async def _handle_deleted_message_notif(self, packet: dict):
-        """Handle NOTIF_MSG_DELETE (opcode 142) — push notification to all clients."""
-        payload = packet.get("payload", {})
-        chat_id = payload.get("chatId")
-        # NOTIF_MSG_DELETE payload uses "messageIds" list
-        message_ids = payload.get("messageIds", [])
-        log.info("MAX delete notif (op=142): chat=%s ids=%s payload_keys=%s",
-                 chat_id, message_ids, list(payload.keys()))
-        if not chat_id:
+        if not chat_id or not message_ids:
             return
 
         bridge_entry = self.lookup.get_primary_by_max(chat_id)
