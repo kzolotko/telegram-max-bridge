@@ -322,6 +322,10 @@ async def _verify_tg_membership(
             workdir=sessions_dir,
         )
         await tg_client.start()
+        # Warm up Pyrogram's peer cache — without this, get_chat() fails
+        # with "Peer id invalid" for chats not yet in the local cache.
+        async for _ in tg_client.get_dialogs():
+            pass
         chat = await tg_client.get_chat(chat_id)
         await tg_client.stop()
         print(f"  ✅ Telegram: {user_name} is a member of '{chat.title}'")
@@ -505,38 +509,35 @@ async def _do_max_auth(name: str, sessions_dir: str) -> int:
 
     profile = account_data.get("profile", {})
     max_user_id = _extract_max_user_id(profile, max_session)
+    client_device_id = client.device_id  # save before potential close
 
-    # If sign_in didn't return user_id, get it via opcode 19 (LOGIN)
+    # If sign_in didn't return user_id, use BridgeMaxClient (PyMax full _sync)
     if not max_user_id:
         log.info("sign_in profile keys: %s", list(profile.keys()))
-        log.info("Trying LOGIN opcode to get user_id...")
+        log.info("Trying BridgeMaxClient login to get user_id...")
         try:
-            from .max.native_client import OP_LOGIN, _default_user_agent
-            login_resp = await client._send_and_wait(OP_LOGIN, {
-                "interactive": True,
-                "token": login_token,
-                "chatsSync": 0, "contactsSync": 0,
-                "presenceSync": 0, "draftsSync": 0,
-                "chatsCount": 0,
-                "userAgent": _default_user_agent(),
-            })
-            lp = login_resp.get("payload", {})
-            contact = lp.get("profile", {}).get("contact", {})
-            max_user_id = (
-                contact.get("sn")
-                or contact.get("id")
-                or contact.get("userId")
-            )
-            if max_user_id:
-                max_user_id = int(max_user_id)
-                log.info("Got user_id from LOGIN: %s", max_user_id)
-            else:
-                log.warning("LOGIN profile.contact keys: %s", list(contact.keys()))
-        except Exception as e:
-            log.warning("LOGIN for user_id failed: %s", e)
+            # Close NativeMaxAuth before connecting BridgeMaxClient
+            max_session.save(login_token, user_id=None, device_id=client_device_id)
+            await client.close()
+            client = None  # mark closed
 
-    max_session.save(login_token, user_id=max_user_id, device_id=client.device_id)
-    await client.close()
+            bridge_client = BridgeMaxClient(
+                token=login_token, device_id=client_device_id,
+            )
+            await bridge_client.connect_and_login()
+            if bridge_client.inner.me is not None:
+                max_user_id = bridge_client.inner.me.id
+                log.info("Got user_id from BridgeMaxClient: %s", max_user_id)
+            else:
+                log.warning("BridgeMaxClient.me is None after login")
+            await bridge_client.disconnect()
+        except Exception as e:
+            log.warning("BridgeMaxClient login for user_id failed: %s", e)
+
+    # Save final session (with user_id if we got it)
+    max_session.save(login_token, user_id=max_user_id, device_id=client_device_id)
+    if client is not None:
+        await client.close()
 
     if max_user_id:
         print(f"  ✅ MAX: authenticated (ID: {max_user_id})")
