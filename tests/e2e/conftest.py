@@ -51,6 +51,8 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "edit: edit tests")
     config.addinivalue_line("markers", "delete: delete tests")
     config.addinivalue_line("markers", "echo: echo loop tests")
+    config.addinivalue_line("markers", "edge: edge case tests")
+    config.addinivalue_line("markers", "reaction: reaction tests")
 
 
 def pytest_runtest_logreport(report):

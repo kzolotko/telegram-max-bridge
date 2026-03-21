@@ -30,7 +30,7 @@ log = logging.getLogger("e2e.clients")
 
 # Invisible zero-width marker used by the bridge to tag its own TG messages.
 # Test client strips it so predicates can match on visible text only.
-_MIRROR_MARKER = "\u200b\u200c\u200b"
+_MIRROR_MARKER = "\u200b"
 
 
 # ── Unified event envelope ────────────────────────────────────────────────────
@@ -251,6 +251,19 @@ class MaxTestClient:
         resp = await self._client.send_message(
             self.chat_id, text,
             reply_to=int(reply_to) if reply_to else None,
+        )
+        payload = resp.get("payload", {})
+        msg = payload.get("message", {})
+        return str(msg.get("id")) if msg.get("id") else None
+
+    async def send_text_with_elements(
+        self, text: str, elements: list[dict], reply_to: str | None = None,
+    ) -> str | None:
+        """Send text with explicit formatting elements (for formatting tests)."""
+        resp = await self._client.send_message(
+            self.chat_id, text,
+            reply_to=int(reply_to) if reply_to else None,
+            elements=elements,
         )
         payload = resp.get("payload", {})
         msg = payload.get("message", {})

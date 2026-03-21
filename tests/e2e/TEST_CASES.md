@@ -15,6 +15,7 @@ pytest tests/e2e/ -v
 # Single test case
 pytest tests/e2e/ -k T01
 pytest tests/e2e/ -k M13
+pytest tests/e2e/ -k E05
 
 # By direction
 pytest tests/e2e/ -k "tg_to_max"
@@ -27,6 +28,7 @@ pytest tests/e2e/ -m edit
 pytest tests/e2e/ -m delete
 pytest tests/e2e/ -m echo
 pytest tests/e2e/ -m formatting
+pytest tests/e2e/ -m edge
 ```
 
 ## Status legend
@@ -77,11 +79,43 @@ pytest tests/e2e/ -m formatting
 | M14 | Удаление сообщения | 🤖 | 🔲 | — |
 | M15 | Эхо-петля: сообщение бриджа не возвращается обратно | 🤖 | 🔲 | — |
 
+### Краевые сценарии
+
+| ID | Сценарий | Авто | Статус | Последний прогон |
+|----|----------|:----:|:------:|-----------------|
+| E01 | Emoji (astral plane) TG → MAX | 🤖 | 🔲 | — |
+| E02 | Emoji (astral plane) MAX → TG | 🤖 | 🔲 | — |
+| E03 | Многострочный текст TG → MAX | 🤖 | 🔲 | — |
+| E04 | Многострочный текст MAX → TG | 🤖 | 🔲 | — |
+| E05 | Спецсимволы `< > & "` TG → MAX | 🤖 | 🔲 | — |
+| E06 | Спецсимволы `< > & "` MAX → TG | 🤖 | 🔲 | — |
+| E07 | Длинный текст (1000+ символов) TG → MAX | 🤖 | 🔲 | — |
+| E08 | Длинный текст (1000+ символов) MAX → TG | 🤖 | 🔲 | — |
+| E09 | Порядок 3 быстрых сообщений TG → MAX | 🤖 | 🔲 | — |
+| E10 | Порядок 3 быстрых сообщений MAX → TG | 🤖 | 🔲 | — |
+| E11 | Двойное редактирование TG → MAX | 🤖 | 🔲 | — |
+| E12 | Двойное редактирование MAX → TG | 🤖 | 🔲 | — |
+
 ### Форматирование
 
 | ID | Сценарий | Авто | Статус | Последний прогон |
 |----|----------|:----:|:------:|-----------------|
-| F01 | Bold TG → MAX | 🤖 | 🔲 | — |
-| F02 | Italic TG → MAX | 🤖 | 🔲 | — |
-| F03 | Bold MAX → TG | 🤖 | 🔲 | — |
-| F04 | Italic MAX → TG | 🤖 | 🔲 | — |
+| F01 | Bold TG → MAX (проверка STRONG элемента) | 🤖 | 🔲 | — |
+| F02 | Italic TG → MAX (проверка EMPHASIZED элемента) | 🤖 | 🔲 | — |
+| F03 | Bold MAX → TG (проверка BOLD entity) | 🤖 | 🔲 | — |
+| F04 | Italic MAX → TG (проверка ITALIC entity) | 🤖 | 🔲 | — |
+| F05 | Underline TG → MAX (проверка UNDERLINE элемента) | 🤖 | 🔲 | — |
+| F06 | Strikethrough TG → MAX (проверка STRIKETHROUGH элемента) | 🤖 | 🔲 | — |
+| F07 | Underline MAX → TG (проверка UNDERLINE entity) | 🤖 | 🔲 | — |
+| F08 | Strikethrough MAX → TG (проверка STRIKETHROUGH entity) | 🤖 | 🔲 | — |
+| F09 | Смешанное (bold + italic) TG → MAX | 🤖 | 🔲 | — |
+| F10 | Code block TG → MAX (передаётся как plain text) | 🤖 | 🔲 | — |
+
+### Реакции
+
+| ID | Сценарий | Авто | Статус | Последний прогон |
+|----|----------|:----:|:------:|-----------------|
+| R01 | Реакция TG → MAX (добавление 👍) | 👤 | 🔲 | — |
+| R02 | Реакция MAX → TG (добавление 👍) | 👤 | 🔲 | — |
+| R03 | Снятие реакции TG → MAX | 👤 | 🔲 | — |
+| R04 | Снятие реакции MAX → TG | 👤 | 🔲 | — |
