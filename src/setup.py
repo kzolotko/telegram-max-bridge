@@ -532,24 +532,57 @@ def _extract_max_user_id(profile: dict, session: MaxSession) -> int | None:
 
 # ── Bridge configuration ─────────────────────────────────────────────────────
 
-async def _load_max_chats(
-    users: list[dict],
+async def _load_tg_chats_for_user(
+    user_name: str,
+    api_id: int,
+    api_hash: str,
     sessions_dir: str,
-) -> list[dict]:
-    """Load MAX group chats via BridgeMaxClient (using first user's session)."""
-    primary = users[0]
-    max_session = MaxSession(f"max_{primary['name']}", sessions_dir)
-    login_token = max_session.load()
-    device_id = max_session.load_device_id()
-    if not login_token or not device_id:
+) -> list:
+    """Load TG group chats for a single user."""
+    tg_session = f"tg_{user_name}"
+    session_path = Path(sessions_dir) / f"{tg_session}.session"
+    if not session_path.exists():
         return []
 
     try:
+        client = Client(
+            name=tg_session,
+            api_id=api_id,
+            api_hash=api_hash,
+            workdir=sessions_dir,
+        )
+        await client.start()
+        tg_chats = []
+        async for dialog in client.get_dialogs():
+            if dialog.chat.type in (ChatType.GROUP, ChatType.SUPERGROUP):
+                tg_chats.append(dialog.chat)
+        await client.stop()
+        tg_chats.sort(key=lambda c: (c.title or "").lower())
+        return tg_chats
+    except Exception as e:
+        log.warning("Failed to load TG chats for %s: %s", user_name, e)
+        return []
+
+
+async def _load_max_chats_for_user(
+    user_name: str,
+    sessions_dir: str,
+) -> list[dict]:
+    """Load MAX group chats for a single user."""
+    max_session = MaxSession(f"max_{user_name}", sessions_dir)
+    if not max_session.exists():
+        return []
+
+    try:
+        login_token = max_session.load()
+        device_id = max_session.load_device_id()
+        if not login_token or not device_id:
+            return []
+
         max_client = BridgeMaxClient(token=login_token, device_id=device_id)
         await max_client.connect_and_login()
 
-        # inner.chats contains group chats, inner.channels contains channels
-        chats = []
+        chats: list[dict] = []
         for chat in max_client.inner.chats:
             chats.append({
                 "id": chat.id,
@@ -569,8 +602,20 @@ async def _load_max_chats(
         chats.sort(key=lambda c: c["title"].lower())
         return chats
     except Exception as e:
-        log.warning("Failed to load MAX chats: %s", e)
+        log.warning("Failed to load MAX chats for %s: %s", user_name, e)
         return []
+
+
+def _select_from_list(items: list, label: str) -> int:
+    """Show numbered list and return selected index."""
+    while True:
+        try:
+            idx = int(prompt(f"Select {label} number")) - 1
+            if 0 <= idx < len(items):
+                return idx
+            print(f"  Enter a number between 1 and {len(items)}")
+        except ValueError:
+            print("  Enter a number")
 
 
 async def collect_bridges(
@@ -581,57 +626,55 @@ async def collect_bridges(
 ) -> list[dict]:
     print_section("Configure Chat Bridges")
 
-    # Load TG dialogs once (using first user's client)
-    primary = users[0]
-    tg_client = Client(
-        name=f"tg_{primary['name']}",
-        api_id=api_id,
-        api_hash=api_hash,
-        workdir=sessions_dir,
-    )
-    await tg_client.start()
-
-    print(f"\n  Loading Telegram chats for {primary['name']}...")
-    tg_chats = []
-    async for dialog in tg_client.get_dialogs():
-        if dialog.chat.type in (ChatType.GROUP, ChatType.SUPERGROUP):
-            tg_chats.append(dialog.chat)
-    tg_chats.sort(key=lambda c: (c.title or "").lower())
-
-    await tg_client.stop()
-
-    # Load MAX chats
-    print(f"  Loading MAX chats for {primary['name']}...")
-    max_chats = await _load_max_chats(users, sessions_dir)
-    if max_chats:
-        print(f"  Found {len(max_chats)} MAX group chat(s)/channel(s)")
-    else:
-        print("  ⚠️  Could not load MAX chats — you'll need to enter IDs manually")
-
     bridges = []
     while True:
         print()
+
+        # 1. Pick user first
+        if len(users) == 1:
+            user = users[0]
+            print(f"  User: {user['name']}")
+        else:
+            print("  Which user should handle this bridge?")
+            for i, u in enumerate(users):
+                print(f"    {i + 1}. {u['name']}")
+            idx = _select_from_list(users, "user")
+            user = users[idx]
+
+        # 2. Load this user's chats
+        print(f"\n  Loading chats for {user['name']}...")
+        tg_chats = await _load_tg_chats_for_user(
+            user["name"], api_id, api_hash, sessions_dir,
+        )
+        max_chats = await _load_max_chats_for_user(user["name"], sessions_dir)
+
+        if not tg_chats:
+            print("  ⚠️  No Telegram groups found for this user")
+        else:
+            print(f"  Found {len(tg_chats)} Telegram group(s)")
+
+        if not max_chats:
+            print("  ⚠️  No MAX chats found — you'll need to enter ID manually")
+        else:
+            print(f"  Found {len(max_chats)} MAX chat(s)/channel(s)")
+
+        # 3. Bridge name
+        print()
         bridge_name = prompt("Bridge name (e.g. team-general)")
 
-        # Pick TG chat
+        # 4. Pick TG chat
         print()
         print("  Available Telegram groups:")
         for i, chat in enumerate(tg_chats):
             print(f"    {i + 1:2}. {chat.title}  (ID: {chat.id})")
         print()
-        while True:
-            try:
-                idx = int(prompt("Select Telegram chat number")) - 1
-                if 0 <= idx < len(tg_chats):
-                    break
-                print(f"  Enter a number between 1 and {len(tg_chats)}")
-            except ValueError:
-                print("  Enter a number")
+        idx = _select_from_list(tg_chats, "Telegram chat")
         telegram_chat_id = tg_chats[idx].id
-        print(f"  ✅ Telegram chat: {tg_chats[idx].title} (ID: {telegram_chat_id})")
+        print(f"  ✅ Telegram: {tg_chats[idx].title} (ID: {telegram_chat_id})")
 
-        # Pick MAX chat
+        # 5. Pick MAX chat
         print()
+        manual_max = False
         if max_chats:
             print("  Available MAX chats:")
             for i, chat in enumerate(max_chats):
@@ -644,36 +687,30 @@ async def collect_bridges(
                 try:
                     idx = int(prompt("Select MAX chat number")) - 1
                     if idx == len(max_chats):
-                        # Manual entry
                         max_chat_id = _prompt_max_chat_id_manual()
+                        manual_max = True
                         break
                     if 0 <= idx < len(max_chats):
                         max_chat_id = max_chats[idx]["id"]
-                        print(f"  ✅ MAX chat: {max_chats[idx]['title']} (ID: {max_chat_id})")
+                        print(f"  ✅ MAX: {max_chats[idx]['title']} (ID: {max_chat_id})")
                         break
                     print(f"  Enter a number between 1 and {len(max_chats) + 1}")
                 except ValueError:
                     print("  Enter a number")
         else:
             max_chat_id = _prompt_max_chat_id_manual()
+            manual_max = True
 
-        # Pick user for this bridge
-        if len(users) == 1:
-            user = users[0]
-        else:
-            print()
-            print("  Which user should handle this bridge?")
-            for i, u in enumerate(users):
-                print(f"    {i + 1}. {u['name']}")
-            while True:
-                try:
-                    idx = int(prompt("Select user number")) - 1
-                    if 0 <= idx < len(users):
-                        break
-                except ValueError:
-                    pass
-                print(f"  Enter a number between 1 and {len(users)}")
-            user = users[idx]
+        # 6. Verify membership only for manually entered MAX ID
+        if manual_max:
+            print(f"\n  Verifying MAX membership for {user['name']}...")
+            max_ok = await _verify_max_membership(
+                user["name"], sessions_dir, max_chat_id,
+            )
+            if not max_ok:
+                if not confirm("Continue anyway?"):
+                    print("  Skipped this bridge.")
+                    continue
 
         bridges.append({
             "name": bridge_name,

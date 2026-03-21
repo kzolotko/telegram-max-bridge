@@ -68,9 +68,8 @@ pip install -r requirements.txt
 1. Ввод Telegram API credentials (получите на [my.telegram.org](https://my.telegram.org) → API development tools)
 2. Аутентификация TG-аккаунта (телефон + код)
 3. Аутентификация MAX-аккаунта (телефон + SMS)
-4. Выбор TG-группы из списка ваших чатов
-5. Выбор MAX-чата из списка ваших чатов
-6. Запись `credentials.yaml` и `config.yaml`
+4. Выбор TG-группы и MAX-чата из списка чатов пользователя
+5. Запись `credentials.yaml` и `config.yaml`
 
 Доступны отдельные режимы:
 
