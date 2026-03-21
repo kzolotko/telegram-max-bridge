@@ -318,6 +318,31 @@ class MaxClientPool:
                     log.error("send_file failed after %d attempts: %s", attempt + 1, e)
                     return None
 
+    async def react(
+        self,
+        max_user_id: int | None,
+        chat_id: int,
+        message_id: str,
+        emoji: str | None,
+    ) -> None:
+        """Add or remove a reaction on a MAX message.
+
+        Pass *emoji=None* (or empty string) to remove the current reaction.
+        """
+        uid = self._resolve_user_id(max_user_id)
+        if uid is None:
+            return
+        client = await self._get_live_client(uid)
+        if not client:
+            return
+        try:
+            if emoji:
+                await client.add_reaction(chat_id, message_id, emoji)
+            else:
+                await client.remove_reaction(chat_id, message_id)
+        except Exception as e:
+            log.warning("react(%s, %s, %r) failed: %s", message_id, uid, emoji, e)
+
     async def send_media_multi(
         self,
         max_user_id: int | None,

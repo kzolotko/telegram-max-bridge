@@ -33,6 +33,11 @@ class MirrorTracker:
         # Values are unused (always True) — we only care about key membership.
         self._tg: OrderedDict[int, bool] = OrderedDict()
         self._max: OrderedDict[str, bool] = OrderedDict()
+        # Reaction mirrors: "(msg_id, emoji_or_empty)" pairs
+        # Used to suppress echo when the bridge sets a reaction on one side
+        # and gets notified about it on the same side.
+        self._tg_reactions: OrderedDict[tuple, bool] = OrderedDict()
+        self._max_reactions: OrderedDict[tuple, bool] = OrderedDict()
 
     # ── mark sent ─────────────────────────────────────────────────────────────
 
@@ -65,4 +70,39 @@ class MirrorTracker:
         """Returns True if this MAX message ID was sent by the bridge."""
         result = msg_id in self._max
         log.debug("is_max_mirror(%r) -> %s  (tracked=%d)", msg_id, result, len(self._max))
+        return result
+
+    # ── Reaction mirrors ──────────────────────────────────────────────────────
+
+    def mark_tg_reaction(self, msg_id: int, emoji: str | None):
+        """Mark that the bridge just set this reaction on a TG message."""
+        key = (msg_id, emoji or "")
+        self._tg_reactions[key] = True
+        if len(self._tg_reactions) > MAX_SIZE:
+            for _ in range(MAX_SIZE // 10):
+                self._tg_reactions.popitem(last=False)
+
+    def mark_max_reaction(self, msg_id: str, emoji: str | None):
+        """Mark that the bridge just set this reaction on a MAX message."""
+        key = (msg_id, emoji or "")
+        self._max_reactions[key] = True
+        if len(self._max_reactions) > MAX_SIZE:
+            for _ in range(MAX_SIZE // 10):
+                self._max_reactions.popitem(last=False)
+
+    def is_tg_reaction_mirror(self, msg_id: int, emoji: str | None) -> bool:
+        """Returns True if this TG reaction was set by the bridge (suppress echo)."""
+        key = (msg_id, emoji or "")
+        result = key in self._tg_reactions
+        if result:
+            # Consume — reaction echoes fire once, then we stop suppressing
+            del self._tg_reactions[key]
+        return result
+
+    def is_max_reaction_mirror(self, msg_id: str, emoji: str | None) -> bool:
+        """Returns True if this MAX reaction was set by the bridge (suppress echo)."""
+        key = (msg_id, emoji or "")
+        result = key in self._max_reactions
+        if result:
+            del self._max_reactions[key]
         return result

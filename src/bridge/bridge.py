@@ -151,6 +151,14 @@ class Bridge:
                         elements=edit_elements,
                     )
 
+        elif event.event_type == "reaction":
+            if event.source_msg_id is not None:
+                max_msg_id = self.store.get_max_msg_id(entry.name, int(event.source_msg_id))
+                if max_msg_id:
+                    self.mirrors.mark_max_reaction(max_msg_id, event.reaction_emoji)
+                    await self.max_pool.react(max_user_id, max_chat_id, max_msg_id,
+                                              event.reaction_emoji)
+
         elif event.event_type == "delete":
             if event.delete_source_msg_id is not None:
                 max_msg_id = self.store.get_max_msg_id(entry.name, int(event.delete_source_msg_id))
@@ -316,6 +324,16 @@ class Bridge:
                         tg_chat_id, tg_msg_id, send_edit,
                         parse_mode=tg_enums.ParseMode.HTML if edit_has_html else tg_enums.ParseMode.DISABLED,
                     )
+
+        elif event.event_type == "reaction":
+            if event.source_msg_id is not None:
+                tg_msg_id = self.store.get_tg_msg_id(entry.name, str(event.source_msg_id))
+                if tg_msg_id:
+                    emoji = event.reaction_emoji
+                    self.mirrors.mark_tg_reaction(tg_msg_id, emoji)
+                    # Pyrogram send_reaction: list of emojis (empty list = remove)
+                    await client.send_reaction(tg_chat_id, tg_msg_id,
+                                               [emoji] if emoji else [])
 
         elif event.event_type == "delete":
             if event.delete_source_msg_id is not None:

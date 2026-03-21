@@ -57,3 +57,4 @@ class BridgeEvent:
     source_msg_id: Optional[int | str] = None
     formatting: Optional[list[dict]] = None  # platform-agnostic formatting entities
     media_list: Optional[list['MediaInfo']] = None  # multiple media (album / multi-attach)
+    reaction_emoji: Optional[str] = None  # emoji string; None = remove reaction

@@ -260,6 +260,8 @@ class MaxListener:
                 await self._handle_deleted_message(data)
             elif opcode == 142:  # NOTIF_MSG_DELETE (other users' deletes)
                 await self._handle_deleted_message(data)
+            elif opcode == 155:  # NOTIF_MSG_REACTIONS_CHANGED
+                await self._handle_reaction(data)
         except Exception as e:
             log.error("Error handling packet (opcode=%s): %s", data.get("opcode"), e, exc_info=True)
 
@@ -480,3 +482,38 @@ class MaxListener:
         chat_id = payload.get("chatId")
         message_ids = payload.get("messageIds", [])
         await self._handle_notif_delete(chat_id, message_ids)
+
+    async def _handle_reaction(self, packet: dict):
+        """Handle NOTIF_MSG_REACTIONS_CHANGED (opcode 155).
+
+        Payload contains:
+          chatId, messageId, totalCount, yourReaction (str|null), counters[].
+        ``yourReaction`` is the reaction OUR account currently has on the
+        message — syncing it to TG is correct because this listener runs under
+        a single user account.
+        """
+        payload = packet.get("payload", {})
+        chat_id = payload.get("chatId")
+        message_id = str(payload.get("messageId", ""))
+        if not chat_id or not message_id:
+            return
+
+        bridge_entry = self.lookup.get_primary_by_max(chat_id)
+        if not bridge_entry:
+            return
+
+        # Echo suppression — we set this reaction ourselves via the bridge
+        our_emoji: str | None = payload.get("yourReaction") or None
+        if self.mirrors.is_max_reaction_mirror(message_id, our_emoji):
+            return
+
+        log.debug("MAX reaction: chat=%s msg=%s emoji=%r", chat_id, message_id, our_emoji)
+        await self.on_event(BridgeEvent(
+            direction="max-to-tg",
+            bridge_entry=bridge_entry,
+            sender_display_name=self.user.name,
+            sender_user_id=self._my_user_id,
+            event_type="reaction",
+            source_msg_id=message_id,
+            reaction_emoji=our_emoji,  # None = remove
+        ))

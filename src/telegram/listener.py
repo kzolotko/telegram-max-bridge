@@ -1,9 +1,11 @@
+import asyncio
 import logging
 from typing import Callable, Awaitable
 
 from pyrogram import Client, filters
 from pyrogram.types import Message
-from pyrogram.handlers import MessageHandler, EditedMessageHandler, DeletedMessagesHandler
+from pyrogram.handlers import MessageHandler, EditedMessageHandler, DeletedMessagesHandler, RawUpdateHandler
+from pyrogram.raw.types import UpdateMessageReactions, PeerChannel, PeerChat, ReactionEmoji
 
 from ..bridge.formatting import MIRROR_MARKER, tg_entities_to_internal
 from ..bridge.mirror_tracker import MirrorTracker
@@ -45,6 +47,9 @@ class TelegramListener:
         # Album (media group) buffering: group_id → buffered state
         self._album_buffer: dict[str, dict] = {}
         self._album_tasks: dict[str, asyncio.Task] = {}
+        # Reaction cache: (chat_id, msg_id) → last known "chosen" emoji (or None)
+        # Used to detect changes and avoid sending duplicate/empty reaction syncs.
+        self._reaction_cache: dict[tuple[int, int], str | None] = {}
 
     async def start(self) -> int:
         chat_ids = self.lookup.get_tg_chat_ids_for_user(self.user.telegram_user_id)
@@ -57,6 +62,8 @@ class TelegramListener:
         # messages, so filters.chat() would never match and the handler
         # would never fire. We filter manually inside using _msg_chat_cache.
         self.client.add_handler(DeletedMessagesHandler(self._handle_deleted_messages))
+        # RawUpdateHandler for reactions (no high-level handler exists in Pyrogram)
+        self.client.add_handler(RawUpdateHandler(self._handle_raw_update))
 
         me = await self.client.get_me()
         log.info("Started for %s as @%s (ID: %d)", self.user.name, me.username, me.id)
@@ -177,6 +184,18 @@ class TelegramListener:
                     reply_to_source_msg_id=reply_to,
                     source_msg_id=message.id,
                 ))
+            elif message.poll:
+                poll_text = self._format_poll(message.poll)
+                await self.on_event(BridgeEvent(
+                    direction="tg-to-max",
+                    bridge_entry=bridge_entry,
+                    sender_display_name=sender_name,
+                    sender_user_id=sender_id,
+                    event_type="text",
+                    text=poll_text,
+                    reply_to_source_msg_id=reply_to,
+                    source_msg_id=message.id,
+                ))
             elif message.text:
                 text_fmt = tg_entities_to_internal(message.text, message.entities)
                 await self.on_event(BridgeEvent(
@@ -286,6 +305,91 @@ class TelegramListener:
             formatting=fmt or None,
         ))
         log.debug("Flushed album %s: %d media items", group_id, len(media_list))
+
+    # ── Poll formatting ───────────────────────────────────────────────────────
+
+    @staticmethod
+    def _format_poll(poll) -> str:
+        """Convert a Telegram Poll to a readable text representation."""
+        lines = [f"📊 {poll.question}"]
+        labels = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        for i, opt in enumerate(poll.options):
+            prefix = labels[i] if i < len(labels) else str(i + 1)
+            lines.append(f"  {prefix}) {opt.text}")
+        if poll.allows_multiple_answers:
+            lines.append("  _(multiple answers allowed)_")
+        if getattr(poll, "is_anonymous", True):
+            lines.append("  _(anonymous)_")
+        return "\n".join(lines)
+
+    # ── Reaction raw update handler ───────────────────────────────────────────
+
+    async def _handle_raw_update(self, client: Client, update, users, chats):
+        """Catch UpdateMessageReactions from Pyrogram raw updates."""
+        try:
+            if not isinstance(update, UpdateMessageReactions):
+                return
+
+            chat_id = self._peer_to_chat_id(update.peer)
+            if chat_id is None:
+                return
+
+            # Only process chats we're bridging
+            bridge_entry = self.lookup.get_primary_by_tg(chat_id)
+            if not bridge_entry:
+                return
+
+            msg_id = update.msg_id
+
+            # Find our "chosen" reaction (chosen_order is not None → our pick)
+            our_emoji: str | None = None
+            for rc in update.reactions.results:
+                if rc.chosen_order is not None and isinstance(rc.reaction, ReactionEmoji):
+                    our_emoji = rc.reaction.emoticon
+                    break
+
+            cache_key = (chat_id, msg_id)
+            prev_emoji = self._reaction_cache.get(cache_key, "UNSET")
+            if prev_emoji == "UNSET":
+                # First time we see this message — initialise cache without syncing
+                self._reaction_cache[cache_key] = our_emoji
+                return
+
+            if our_emoji == prev_emoji:
+                return  # no change
+
+            # Check echo suppression
+            if self.mirrors.is_tg_reaction_mirror(msg_id, our_emoji):
+                self._reaction_cache[cache_key] = our_emoji
+                return
+
+            self._reaction_cache[cache_key] = our_emoji
+
+            log.debug("TG reaction change: chat=%s msg=%s  %r → %r",
+                      chat_id, msg_id, prev_emoji, our_emoji)
+
+            await self.on_event(BridgeEvent(
+                direction="tg-to-max",
+                bridge_entry=bridge_entry,
+                sender_display_name=self.user.name,
+                sender_user_id=self.user.telegram_user_id,
+                event_type="reaction",
+                source_msg_id=msg_id,
+                reaction_emoji=our_emoji,  # None = remove
+            ))
+        except Exception as e:
+            log.error("Error handling raw reaction update: %s", e, exc_info=True)
+
+    @staticmethod
+    def _peer_to_chat_id(peer) -> int | None:
+        """Convert a raw Peer object to a Pyrogram-style chat_id integer."""
+        if isinstance(peer, PeerChannel):
+            return int(f"-100{peer.channel_id}")
+        if isinstance(peer, PeerChat):
+            return -peer.chat_id
+        if hasattr(peer, "user_id"):
+            return peer.user_id
+        return None
 
     async def _handle_edited_message(self, client: Client, message: Message):
         try:

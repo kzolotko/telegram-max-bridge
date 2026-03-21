@@ -209,6 +209,14 @@ class BridgeMaxClient:
         """Resolve user info by IDs."""
         return await self.inner.get_users(user_ids)
 
+    async def add_reaction(self, chat_id: int, message_id: str, emoji: str) -> None:
+        """Add an emoji reaction to a MAX message."""
+        await self.inner.add_reaction(chat_id=chat_id, message_id=message_id, reaction=emoji)
+
+    async def remove_reaction(self, chat_id: int, message_id: str) -> None:
+        """Remove our reaction from a MAX message."""
+        await self.inner.remove_reaction(chat_id=chat_id, message_id=message_id)
+
     # ── Raw protocol access (for media.py compatibility) ───────
 
     async def invoke_method(self, opcode: int, payload: dict[str, Any]) -> dict[str, Any]:

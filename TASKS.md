@@ -79,8 +79,6 @@
 | 🟡 Medium | E2E-автотесты | Автоматический прогон тест-кейсов через реальные аккаунты |
 | 🟢 Low | Healthcheck endpoint | HTTP `/health` для Docker healthcheck |
 | 🟢 Low | Метрики | Счётчики переданных сообщений |
-| 🟢 Low | Реакции | Синхронизация emoji-реакций |
-| 🟢 Low | Опросы (polls) | Пересылка как текст с вариантами ответов |
 
 ---
 
@@ -104,6 +102,8 @@
 | ✅ Тёплый кэш Pyrogram peer | `get_dialogs()` перед `get_chat()` устраняет ошибку «Peer id invalid» для обычных TG-групп |
 | ✅ Стабилизация повторного подключения MAX в setup | Пауза 2 с между MAX-сессиями предотвращает ошибки «Connection lost / Failed to unpack packet» |
 | ✅ Форматирование текста (bold/italic/code) | Конвертация TG entities ↔ MAX elements. Bold, italic, underline, strikethrough — в обе стороны. Code/pre/text_link — TG→MAX без форматирования (только текст) |
+| ✅ Реакции | TG→MAX: `RawUpdateHandler` + `UpdateMessageReactions.chosen_order` → `add/remove_reaction`. MAX→TG: opcode 155 `yourReaction` → `send_reaction`. Echo-защита через `MirrorTracker` |
+| ✅ Опросы (polls) | TG→MAX: `message.poll` форматируется как `📊 Вопрос\n  A) ...` и отправляется как текст. MAX→TG: не требуется (MAX не поддерживает polls) |
 | ✅ Несколько медиафайлов в сообщении | TG→MAX: буферизация альбомов по `media_group_id` (0.8 с задержка); MAX→TG: все аттачи скачиваются и пересылаются как TG album через `send_media_group` |
 | ✅ Graceful reconnect | Pool-клиенты MAX автоматически переподключаются при обрыве; retry отправки после reconnect; MirrorTracker с LRU-eviction (10k); health-check каждые 5 мин |
 
