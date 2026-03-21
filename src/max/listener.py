@@ -130,9 +130,7 @@ class MaxListener:
                 for member in members:
                     c = member.contact
                     if c and c.id and c.id not in self._name_cache:
-                        name = None
-                        if c.names:
-                            name = c.names[0].name or c.names[0].first_name or c.names[0].last_name
+                        name = self._extract_name_from_names(c.names) if c.names else None
                         if name:
                             self._name_cache[c.id] = name
                 log.info("Pre-loaded %d member names for MAX chat %s",
@@ -188,11 +186,37 @@ class MaxListener:
         return None
 
     @staticmethod
+    def _extract_name_from_names(names) -> str | None:
+        """Pick the best display name from a list of Name objects.
+
+        MAX stores multiple name entries with different types:
+        - "FRIENDLY" — user-chosen nickname (e.g. "Кирюша")
+        - "BASE" — formal/registration name (e.g. "Кирилл")
+        Priority: FRIENDLY > last entry > first entry.
+        """
+        if not names:
+            return None
+        # Prefer FRIENDLY (nickname) — this is what other users see
+        friendly = None
+        fallback = None
+        for n in names:
+            display = n.name or n.first_name or n.last_name
+            if not display:
+                continue
+            n_type = getattr(n, 'type', None)
+            if n_type == "FRIENDLY":
+                friendly = display
+            elif n_type == "BASE" and fallback is None:
+                fallback = display
+            elif fallback is None:
+                fallback = display
+        return friendly or fallback
+
+    @staticmethod
     def _extract_name(u) -> str | None:
         """Extract display name from a PyMax User/Contact object."""
         if hasattr(u, 'names') and u.names:
-            n = u.names[0]
-            name = n.name or n.first_name or n.last_name
+            name = MaxListener._extract_name_from_names(u.names)
             if name:
                 return name
         if hasattr(u, 'display_name') and u.display_name:
