@@ -73,6 +73,8 @@ class MaxListener:
         self.client = BridgeMaxClient(token=self._login_token, device_id=self._device_id)
         self.client.set_raw_callback(self._handle_packet)
         await self.client.connect_and_login()
+        # Pre-populate name cache with members of bridged MAX chats
+        await self._preload_chat_members()
 
     async def _reconnect_loop(self):
         delay = RECONNECT_BASE_DELAY
@@ -111,40 +113,112 @@ class MaxListener:
             except Exception:
                 pass
 
-    async def _resolve_sender_name(self, sender_id: int) -> str:
-        """Resolve display name for a MAX user ID.
+    async def _preload_chat_members(self):
+        """Pre-load names of all members in bridged MAX chats into _name_cache.
+
+        Called after connect — uses load_members() which goes through
+        _send_and_wait (safe here because recv_loop handlers aren't active yet
+        for message processing, and _send_and_wait uses seq-based futures).
+        """
+        max_chat_ids = set()
+        for entry in self.config.bridges:
+            max_chat_ids.add(entry.max_chat_id)
+
+        for chat_id in max_chat_ids:
+            try:
+                members, _ = await self.client.inner.load_members(chat_id)
+                for member in members:
+                    c = member.contact
+                    if c and c.id and c.id not in self._name_cache:
+                        name = None
+                        if c.names:
+                            name = c.names[0].name or c.names[0].first_name or c.names[0].last_name
+                        if name:
+                            self._name_cache[c.id] = name
+                log.info("Pre-loaded %d member names for MAX chat %s",
+                         len(members) if members else 0, chat_id)
+            except Exception as e:
+                log.warning("Failed to preload members for chat %s: %s", chat_id, e)
+
+    def _resolve_sender_name(self, sender_id: int) -> str:
+        """Resolve display name for a MAX user ID — no network calls.
 
         Known bridge users are pre-populated from config.
-        Unknown users are resolved via get_users() API call (with timeout).
-        Falls back to 'User:<id>' only if the API call fails.
+        Other users are looked up in PyMax's internal cache (populated
+        during _sync at login and updated as messages arrive).
+        Falls back to 'User:<id>' only if no cached data exists.
+
+        NOTE: This must be synchronous because it runs inside the PyMax
+        raw_receive handler which is awaited by _recv_loop. Calling
+        _send_and_wait (e.g. get_users) here would deadlock.
         """
         if sender_id in self._name_cache:
             return self._name_cache[sender_id]
-        # Try to resolve the real name before delivering the message.
+
+        # Try PyMax's internal user cache (populated at login + on messages)
+        name = self._try_pymax_cache(sender_id)
+        if name:
+            self._name_cache[sender_id] = name
+            log.debug("Resolved MAX user %s → %s (from PyMax cache)", sender_id, name)
+            return name
+
+        # Schedule a background fetch for future messages (runs outside handler)
+        asyncio.ensure_future(self._bg_resolve_name(sender_id))
+
+        fallback = f"User:{sender_id}"
+        self._name_cache[sender_id] = fallback
+        return fallback
+
+    def _try_pymax_cache(self, sender_id: int) -> str | None:
+        """Try to extract name from PyMax's internal user/contact cache."""
+        if not self.client:
+            return None
+        try:
+            # PyMax caches users it has seen in self.inner._users
+            u = self.client.inner.get_cached_user(sender_id)
+            if u is not None:
+                return self._extract_name(u)
+
+            # Also check contacts loaded during _sync
+            for contact in self.client.inner.contacts:
+                if contact.id == sender_id:
+                    return self._extract_name(contact)
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def _extract_name(u) -> str | None:
+        """Extract display name from a PyMax User/Contact object."""
+        if hasattr(u, 'names') and u.names:
+            n = u.names[0]
+            name = n.name or n.first_name or n.last_name
+            if name:
+                return name
+        if hasattr(u, 'display_name') and u.display_name:
+            return u.display_name
+        if hasattr(u, 'first_name') and u.first_name:
+            return u.first_name
+        return None
+
+    async def _bg_resolve_name(self, sender_id: int):
+        """Background task: fetch real name via network, update cache.
+
+        Runs as a separate task so it doesn't deadlock the recv loop.
+        The current message uses fallback; future messages get the real name.
+        """
         try:
             users = await asyncio.wait_for(
                 self.client.get_users([sender_id]),
                 timeout=5.0,
             )
             if users:
-                u = users[0]
-                name = None
-                if hasattr(u, 'names') and u.names:
-                    name = u.names[0].first_name or u.names[0].last_name
-                if not name and hasattr(u, 'display_name'):
-                    name = u.display_name
-                if not name and hasattr(u, 'first_name'):
-                    name = u.first_name
+                name = self._extract_name(users[0])
                 if name:
                     self._name_cache[sender_id] = name
-                    log.debug("Resolved MAX user %s → %s", sender_id, name)
-                    return name
+                    log.debug("Resolved MAX user %s → %s (background)", sender_id, name)
         except Exception:
-            log.debug("Failed to resolve MAX user %s, using fallback", sender_id)
-        # Fallback — cache it so we don't retry on every message.
-        fallback = f"User:{sender_id}"
-        self._name_cache[sender_id] = fallback
-        return fallback
+            pass
 
     async def _handle_packet(self, data: dict[str, Any]):
         try:
@@ -188,7 +262,7 @@ class MaxListener:
         if not bridge_entry:
             return
 
-        sender_name = await self._resolve_sender_name(sender_id)
+        sender_name = self._resolve_sender_name(sender_id)
         text = message.get("text")
         attaches = message.get("attaches", [])
 
