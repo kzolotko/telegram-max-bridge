@@ -111,24 +111,16 @@ class MaxListener:
             except Exception:
                 pass
 
-    def _resolve_sender_name(self, sender_id: int) -> str:
-        """Resolve display name for a MAX user ID — instant, no network calls.
+    async def _resolve_sender_name(self, sender_id: int) -> str:
+        """Resolve display name for a MAX user ID.
 
         Known bridge users are pre-populated from config.
-        Unknown users get a 'User:<id>' fallback. A background task tries
-        to resolve the real name for next time, but never blocks delivery.
+        Unknown users are resolved via get_users() API call (with timeout).
+        Falls back to 'User:<id>' only if the API call fails.
         """
         if sender_id in self._name_cache:
             return self._name_cache[sender_id]
-        # Immediate fallback — never block message delivery.
-        fallback = f"User:{sender_id}"
-        self._name_cache[sender_id] = fallback
-        # Try to resolve the real name in background for future messages.
-        asyncio.create_task(self._bg_resolve_name(sender_id))
-        return fallback
-
-    async def _bg_resolve_name(self, sender_id: int):
-        """Background task: try to resolve real name, update cache silently."""
+        # Try to resolve the real name before delivering the message.
         try:
             users = await asyncio.wait_for(
                 self.client.get_users([sender_id]),
@@ -146,8 +138,13 @@ class MaxListener:
                 if name:
                     self._name_cache[sender_id] = name
                     log.debug("Resolved MAX user %s → %s", sender_id, name)
+                    return name
         except Exception:
-            pass  # Keep fallback; will retry on next unknown sender
+            log.debug("Failed to resolve MAX user %s, using fallback", sender_id)
+        # Fallback — cache it so we don't retry on every message.
+        fallback = f"User:{sender_id}"
+        self._name_cache[sender_id] = fallback
+        return fallback
 
     async def _handle_packet(self, data: dict[str, Any]):
         try:
@@ -191,7 +188,7 @@ class MaxListener:
         if not bridge_entry:
             return
 
-        sender_name = self._resolve_sender_name(sender_id)
+        sender_name = await self._resolve_sender_name(sender_id)
         text = message.get("text")
         attaches = message.get("attaches", [])
 
