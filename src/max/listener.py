@@ -189,28 +189,16 @@ class MaxListener:
     def _extract_name_from_names(names) -> str | None:
         """Pick the best display name from a list of Name objects.
 
-        MAX stores multiple name entries with different types:
-        - "FRIENDLY" — user-chosen nickname (e.g. "Кирюша")
-        - "BASE" — formal/registration name (e.g. "Кирилл")
-        Priority: FRIENDLY > last entry > first entry.
+        MAX name entries have a `type` field (observed: "ONEME").
+        Uses .name (full display name) first, then first_name, last_name.
         """
         if not names:
             return None
-        # Prefer FRIENDLY (nickname) — this is what other users see
-        friendly = None
-        fallback = None
         for n in names:
             display = n.name or n.first_name or n.last_name
-            if not display:
-                continue
-            n_type = getattr(n, 'type', None)
-            if n_type == "FRIENDLY":
-                friendly = display
-            elif n_type == "BASE" and fallback is None:
-                fallback = display
-            elif fallback is None:
-                fallback = display
-        return friendly or fallback
+            if display:
+                return display
+        return None
 
     @staticmethod
     def _extract_name(u) -> str | None:
