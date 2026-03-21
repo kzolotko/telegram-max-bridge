@@ -242,13 +242,11 @@ class MaxListener:
             opcode = data.get("opcode", 0)
 
             # PyMax uses Opcode enum values (ints) for opcodes
-            if opcode == 128:  # NOTIF_MESSAGE
+            if opcode == 128:  # NOTIF_MESSAGE (new, edit, delete — via status field)
                 await self._handle_message(data)
-            elif opcode == 67:  # MSG_EDIT notification
-                await self._handle_edited_message(data)
-            elif opcode == 66:  # MSG_DELETE
+            elif opcode == 66:  # MSG_DELETE (server echo of our own delete — has chatId+messageIds)
                 await self._handle_deleted_message(data)
-            elif opcode == 142:  # NOTIF_MSG_DELETE
+            elif opcode == 142:  # NOTIF_MSG_DELETE (other users' deletes)
                 await self._handle_deleted_message(data)
         except Exception as e:
             log.error("Error handling packet (opcode=%s): %s", data.get("opcode"), e, exc_info=True)
@@ -260,6 +258,16 @@ class MaxListener:
         msg_id = str(message.get("id", ""))
         # Sender ID lives in message.sender (opcode 128), NOT payload.fromUserId
         sender_id = message.get("sender") or payload.get("fromUserId")
+        status = message.get("status")
+
+        # Edits and deletes from other users arrive as NOTIF_MESSAGE (opcode 128)
+        # with status="EDITED" or status="REMOVED" — route them accordingly.
+        if status == "EDITED":
+            await self._handle_notif_edit(chat_id, message, msg_id, sender_id)
+            return
+        elif status == "REMOVED":
+            await self._handle_notif_delete(chat_id, [message.get("id")])
+            return
 
         log.debug("MAX msg: chat=%s sender=%s msg_id=%r text=%r attaches=%s",
                   chat_id, sender_id, msg_id,
@@ -372,25 +380,18 @@ class MaxListener:
                 source_msg_id=msg_id,
             ))
 
-    async def _handle_edited_message(self, packet: dict):
-        payload = packet.get("payload", {})
-        chat_id = payload.get("chatId")
-        sender_id = payload.get("fromUserId")
-        msg_id = str(payload.get("messageId", ""))
-        text = payload.get("text")
-
+    async def _handle_notif_edit(self, chat_id, message: dict, msg_id: str, sender_id):
+        """Handle edit notification from NOTIF_MESSAGE (opcode 128, status=EDITED)."""
         if not chat_id or not msg_id:
             return
-
         if self.mirrors.is_max_mirror(msg_id):
             return
-
         bridge_entry = self.lookup.get_primary_by_max(chat_id)
         if not bridge_entry:
             return
-
-        sender_name = payload.get("senderName", "Unknown")
-
+        sender_name = self._resolve_sender_name(sender_id) if sender_id else "Unknown"
+        text = message.get("text")
+        log.debug("MAX edit: chat=%s msg=%s sender=%s", chat_id, msg_id, sender_id)
         await self.on_event(BridgeEvent(
             direction="max-to-tg",
             bridge_entry=bridge_entry,
@@ -402,19 +403,17 @@ class MaxListener:
             source_msg_id=msg_id,
         ))
 
-    async def _handle_deleted_message(self, packet: dict):
-        """Handle MSG_DELETE (opcode 66) and NOTIF_MSG_DELETE (opcode 142)."""
-        payload = packet.get("payload", {})
-        chat_id = payload.get("chatId")
-        message_ids = payload.get("messageIds", [])
+    async def _handle_notif_delete(self, chat_id, message_ids: list):
+        """Handle delete notification (opcode 142 or NOTIF_MESSAGE status=REMOVED)."""
         if not chat_id or not message_ids:
             return
-
         bridge_entry = self.lookup.get_primary_by_max(chat_id)
         if not bridge_entry:
             return
-
         for mid in message_ids:
+            if mid is None:
+                continue
+            log.debug("MAX delete: chat=%s msg=%s", chat_id, mid)
             await self.on_event(BridgeEvent(
                 direction="max-to-tg",
                 bridge_entry=bridge_entry,
@@ -423,3 +422,10 @@ class MaxListener:
                 delete_source_msg_id=str(mid),
                 source_msg_id=str(mid),
             ))
+
+    async def _handle_deleted_message(self, packet: dict):
+        """Handle MSG_DELETE (opcode 66) and NOTIF_MSG_DELETE (opcode 142)."""
+        payload = packet.get("payload", {})
+        chat_id = payload.get("chatId")
+        message_ids = payload.get("messageIds", [])
+        await self._handle_notif_delete(chat_id, message_ids)

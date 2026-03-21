@@ -35,6 +35,10 @@ class TelegramListener:
         self.on_event = on_event
         self.client = client
         self.user = user
+        # Cache: tg_msg_id → chat_id, for delete events in regular groups
+        # where Pyrogram does not include chat info in the callback.
+        self._msg_chat_cache: dict[int, int] = {}
+        self._MSG_CACHE_MAX = 10_000
 
     async def start(self) -> int:
         chat_ids = self.lookup.get_tg_chat_ids_for_user(self.user.telegram_user_id)
@@ -152,8 +156,19 @@ class TelegramListener:
                     reply_to_source_msg_id=reply_to,
                     source_msg_id=message.id,
                 ))
+            # Cache msg_id → chat_id for delete lookup in regular groups
+            self._cache_msg_chat(message.id, message.chat.id)
         except Exception as e:
             log.error("Error handling message: %s", e)
+
+    def _cache_msg_chat(self, msg_id: int, chat_id: int):
+        """Store msg_id → chat_id mapping for delete resolution in regular groups."""
+        self._msg_chat_cache[msg_id] = chat_id
+        if len(self._msg_chat_cache) > self._MSG_CACHE_MAX:
+            # Evict oldest 10% of entries (dict preserves insertion order)
+            evict = self._MSG_CACHE_MAX // 10
+            for key in list(self._msg_chat_cache.keys())[:evict]:
+                del self._msg_chat_cache[key]
 
     async def _handle_edited_message(self, client: Client, message: Message):
         try:
@@ -187,9 +202,13 @@ class TelegramListener:
     async def _handle_deleted_messages(self, client: Client, messages: list[Message]):
         try:
             for message in messages:
-                if not message.chat:
+                # Supergroups provide chat in the event; regular groups don't.
+                # Fall back to the local msg→chat cache populated on new messages.
+                chat_id = message.chat.id if message.chat else \
+                          self._msg_chat_cache.get(message.id)
+                if not chat_id:
                     continue
-                bridge_entry = self.lookup.get_primary_by_tg(message.chat.id)
+                bridge_entry = self.lookup.get_primary_by_tg(chat_id)
                 if not bridge_entry:
                     continue
 
