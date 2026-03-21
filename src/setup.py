@@ -506,13 +506,43 @@ async def _do_max_auth(name: str, sessions_dir: str) -> int:
     profile = account_data.get("profile", {})
     max_user_id = _extract_max_user_id(profile, max_session)
 
+    # If sign_in didn't return user_id, get it via opcode 19 (LOGIN)
+    if not max_user_id:
+        log.info("sign_in profile keys: %s", list(profile.keys()))
+        log.info("Trying LOGIN opcode to get user_id...")
+        try:
+            from .max.native_client import OP_LOGIN, _default_user_agent
+            login_resp = await client._send_and_wait(OP_LOGIN, {
+                "interactive": True,
+                "token": login_token,
+                "chatsSync": 0, "contactsSync": 0,
+                "presenceSync": 0, "draftsSync": 0,
+                "chatsCount": 0,
+                "userAgent": _default_user_agent(),
+            })
+            lp = login_resp.get("payload", {})
+            contact = lp.get("profile", {}).get("contact", {})
+            max_user_id = (
+                contact.get("sn")
+                or contact.get("id")
+                or contact.get("userId")
+            )
+            if max_user_id:
+                max_user_id = int(max_user_id)
+                log.info("Got user_id from LOGIN: %s", max_user_id)
+            else:
+                log.warning("LOGIN profile.contact keys: %s", list(contact.keys()))
+        except Exception as e:
+            log.warning("LOGIN for user_id failed: %s", e)
+
     max_session.save(login_token, user_id=max_user_id, device_id=client.device_id)
     await client.close()
 
     if max_user_id:
         print(f"  ✅ MAX: authenticated (ID: {max_user_id})")
     else:
-        print("  ✅ MAX: authenticated (user ID not found in response — check session file)")
+        print("  ⚠️  MAX: authenticated but user ID not found automatically")
+        print("  You can find it at https://web.max.ru → DevTools → viewerId")
 
     return max_user_id
 
