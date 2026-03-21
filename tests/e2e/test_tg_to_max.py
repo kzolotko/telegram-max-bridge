@@ -12,13 +12,39 @@ Prerequisites:
 from __future__ import annotations
 
 import asyncio
+import os
 
 import pytest
+
+from .media_fixtures import make_test_wav, make_test_ogg, save_temp_media
 
 pytestmark = [
     pytest.mark.asyncio(loop_scope="session"),
     pytest.mark.tg_to_max,
 ]
+
+
+# ── Session-scoped media file fixtures ────────────────────────────────────────
+
+@pytest.fixture(scope="session")
+def _wav_path() -> str:
+    path = save_temp_media(make_test_wav(), ".wav")
+    yield path
+    os.unlink(path)
+
+
+@pytest.fixture(scope="session")
+def _ogg_path() -> str:
+    path = save_temp_media(make_test_ogg(), ".ogg")
+    yield path
+    os.unlink(path)
+
+
+@pytest.fixture(scope="session")
+def _doc_path() -> str:
+    path = save_temp_media(b"E2E test document content\n", ".txt")
+    yield path
+    os.unlink(path)
 
 
 async def test_T01_text_registered(harness):
@@ -139,4 +165,70 @@ async def test_T15_echo_loop(harness):
     )
     assert echo is None, (
         f"Echo loop detected! Marker {marker!r} arrived back in TG: {echo.text!r}"
+    )
+
+# ── File, audio, voice, poll ──────────────────────────────────────────────────
+
+async def test_T06_document_tg_to_max(harness, _doc_path):
+    """T06: TG→MAX файл/документ — arrives in MAX with FILE attachment."""
+    marker = harness.make_marker()
+    await harness.tg.send_document(_doc_path, caption=marker)
+
+    result = await harness.max.wait_for(
+        lambda e: e.kind == "message" and marker in (e.text or ""),
+        timeout=20,
+    )
+    assert result is not None, "Bridge did not forward document TG→MAX"
+    attaches = result.raw.get("attaches", [])
+    assert len(attaches) >= 1, f"No attachments in MAX message: {result.raw}"
+    types = [a.get("_type") for a in attaches]
+    assert any(t in ("FILE", "PHOTO") for t in types), (
+        f"Expected FILE attachment, got: {types}"
+    )
+
+
+async def test_T07_audio_tg_to_max(harness, _wav_path):
+    """T07: TG→MAX аудио — arrives in MAX as file attachment."""
+    marker = harness.make_marker()
+    await harness.tg.send_audio(_wav_path, caption=marker)
+
+    result = await harness.max.wait_for(
+        lambda e: e.kind == "message" and marker in (e.text or ""),
+        timeout=20,
+    )
+    assert result is not None, "Bridge did not forward audio TG→MAX"
+    attaches = result.raw.get("attaches", [])
+    assert len(attaches) >= 1, f"No attachments in MAX message: {result.raw}"
+
+
+async def test_T08_voice_tg_to_max(harness, _ogg_path):
+    """T08: TG→MAX голосовое сообщение — arrives in MAX as file attachment."""
+    marker = harness.make_marker()
+    await harness.tg.send_voice(_ogg_path, caption=marker)
+
+    result = await harness.max.wait_for(
+        lambda e: e.kind == "message" and marker in (e.text or ""),
+        timeout=20,
+    )
+    assert result is not None, "Bridge did not forward voice TG→MAX"
+    attaches = result.raw.get("attaches", [])
+    assert len(attaches) >= 1, f"No attachments in MAX message: {result.raw}"
+
+
+async def test_T10_poll_tg_to_max(harness):
+    """T10: TG→MAX опрос — bridge forwards poll as formatted text."""
+    marker = harness.make_marker()
+    question = f"Тест-опрос {marker}"
+    await harness.tg.send_poll(question, ["Да", "Нет", "Не знаю"])
+
+    result = await harness.max.wait_for(
+        lambda e: e.kind == "message" and marker in (e.text or ""),
+        timeout=20,
+    )
+    assert result is not None, "Bridge did not forward poll TG→MAX"
+    assert "📊" in (result.text or ""), (
+        f"Expected poll emoji 📊 in forwarded text: {result.text!r}"
+    )
+    assert "Да" in (result.text or ""), (
+        f"Poll options lost in forwarding: {result.text!r}"
     )

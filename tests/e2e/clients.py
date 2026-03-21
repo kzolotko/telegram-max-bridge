@@ -21,7 +21,9 @@ from pyrogram.handlers import (
     MessageHandler,
     EditedMessageHandler,
     DeletedMessagesHandler,
+    RawUpdateHandler,
 )
+from pyrogram.raw.types import UpdateMessageReactions, PeerChannel, PeerChat, ReactionEmoji
 from pyrogram.types import Message
 
 from src.max.bridge_client import BridgeMaxClient
@@ -48,10 +50,11 @@ _MIRROR_MARKER = "\u200b"
 class ReceivedEvent:
     """A message/edit/delete captured by a test client."""
 
-    kind: str  # "message", "edit", "delete"
+    kind: str  # "message", "edit", "delete", "reaction"
     chat_id: int | str | None = None
     msg_id: str | None = None
     text: str | None = None
+    emoji: str | None = None  # for reaction events: the emoji, or None if removed
     sender_id: int | None = None
     raw: Any = None  # original object (Pyrogram Message or MAX dict)
 
@@ -105,6 +108,8 @@ class TgTestClient:
         # No filter for deletes (same reason as bridge — regular groups
         # don't include chat info in delete callbacks).
         self._client.add_handler(DeletedMessagesHandler(self._on_deleted))
+        # Raw update handler for reactions (no chat-level filter available)
+        self._client.add_handler(RawUpdateHandler(self._on_raw_update))
 
         me = await self._client.get_me()
         log.info(
@@ -131,6 +136,18 @@ class TgTestClient:
 
     async def send_video(self, path: str, caption: str = "") -> Message:
         return await self._client.send_video(self.chat_id, path, caption=caption)
+
+    async def send_audio(self, path: str, caption: str = "") -> Message:
+        return await self._client.send_audio(self.chat_id, path, caption=caption)
+
+    async def send_voice(self, path: str, caption: str = "") -> Message:
+        return await self._client.send_voice(self.chat_id, path, caption=caption)
+
+    async def send_document(self, path: str, caption: str = "") -> Message:
+        return await self._client.send_document(self.chat_id, path, caption=caption)
+
+    async def send_poll(self, question: str, options: list[str]) -> Message:
+        return await self._client.send_poll(self.chat_id, question, options)
 
     async def send_media_group(self, media: list) -> list[Message]:
         """Send an album (list of InputMediaPhoto / InputMediaVideo)."""
@@ -257,6 +274,38 @@ class TgTestClient:
                 msg_id=str(msg.id) if hasattr(msg, "id") else None,
                 raw=msg,
             ))
+
+    async def _on_raw_update(self, _client: Client, update, users, chats) -> None:
+        """Capture UpdateMessageReactions for reaction tests."""
+        if not isinstance(update, UpdateMessageReactions):
+            return
+
+        # Resolve chat_id from peer
+        peer = update.peer
+        if isinstance(peer, PeerChannel):
+            chat_id = -1000000000000 - peer.channel_id
+        elif isinstance(peer, PeerChat):
+            chat_id = -peer.chat_id
+        else:
+            return
+
+        if chat_id != self.chat_id:
+            return
+
+        # Find the emoji with chosen_order set (our own reaction)
+        our_emoji: str | None = None
+        for rc in update.reactions.results:
+            if rc.chosen_order is not None and isinstance(rc.reaction, ReactionEmoji):
+                our_emoji = rc.reaction.emoticon
+                break
+
+        await self._queue.put(ReceivedEvent(
+            kind="reaction",
+            chat_id=chat_id,
+            msg_id=str(update.msg_id),
+            emoji=our_emoji,
+            raw=update,
+        ))
 
 
 # ── MAX test client ──────────────────────────────────────────────────────────
@@ -422,6 +471,8 @@ class MaxTestClient:
             await self._on_notif_message(data)
         elif opcode in (66, 142):  # MSG_DELETE / NOTIF_MSG_DELETE
             await self._on_delete(data)
+        elif opcode == 155:  # NOTIF_MSG_REACTIONS_CHANGED
+            await self._on_reaction(data)
 
     async def _on_notif_message(self, data: dict) -> None:
         payload = data.get("payload", {})
@@ -474,3 +525,24 @@ class MaxTestClient:
                 msg_id=str(mid) if mid else None,
                 raw=data,
             ))
+
+    async def _on_reaction(self, data: dict) -> None:
+        """Handle NOTIF_MSG_REACTIONS_CHANGED (opcode 155)."""
+        payload = data.get("payload", {})
+        chat_id = payload.get("chatId")
+        if chat_id != self.chat_id:
+            return
+        msg_id = payload.get("messageId")
+        # yourReaction: the emoji string for this account, or absent/None if removed
+        your_reaction: str | None = payload.get("yourReaction") or None
+        # Also check the reactions array for any reaction that was set
+        reactions = payload.get("reactions", [])
+        top_emoji: str | None = reactions[0].get("reaction") if reactions else None
+
+        await self._queue.put(ReceivedEvent(
+            kind="reaction",
+            chat_id=chat_id,
+            msg_id=str(msg_id) if msg_id else None,
+            emoji=your_reaction or top_emoji,
+            raw=data,
+        ))

@@ -168,3 +168,45 @@ async def test_M15_echo_loop(harness):
     assert echo is None, (
         f"Echo loop detected! Marker {marker!r} arrived back in MAX: {echo.text!r}"
     )
+
+# ── File and audio ────────────────────────────────────────────────────────────
+
+async def test_M06_document_max_to_tg(harness):
+    """M06: MAX→TG файл/документ — arrives in TG as document."""
+    marker = harness.make_marker()
+    content = b"E2E test document from MAX\n"
+    await harness.max.send_file(
+        content, "test.txt", "text/plain", caption=marker,
+    )
+
+    result = await harness.tg.wait_for(
+        lambda e: e.kind == "message" and marker in (e.text or ""),
+        timeout=20,
+    )
+    assert result is not None, "Bridge did not forward document MAX→TG"
+    has_media = (
+        getattr(result.raw, "document", None) is not None
+        or getattr(result.raw, "photo", None) is not None
+    )
+    assert has_media, "No document/photo in TG message"
+
+
+async def test_M07_audio_max_to_tg(harness):
+    """M07: MAX→TG аудио — arrives in TG as audio or document."""
+    from .media_fixtures import make_test_wav
+    marker = harness.make_marker()
+    await harness.max.send_file(
+        make_test_wav(), "audio.wav", "audio/wav", caption=marker,
+    )
+
+    result = await harness.tg.wait_for(
+        lambda e: e.kind == "message" and marker in (e.text or ""),
+        timeout=20,
+    )
+    assert result is not None, "Bridge did not forward audio MAX→TG"
+    has_media = (
+        getattr(result.raw, "audio", None) is not None
+        or getattr(result.raw, "document", None) is not None
+        or getattr(result.raw, "voice", None) is not None
+    )
+    assert has_media, "No audio/document in TG message"

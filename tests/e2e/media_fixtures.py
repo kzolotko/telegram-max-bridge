@@ -151,6 +151,100 @@ def make_test_video_mp4() -> bytes:
     return ftyp + moov + mdat
 
 
+def make_test_wav() -> bytes:
+    """Generate a minimal valid WAV file (1 sample of silence, 8-bit mono 8kHz)."""
+    audio_data = b"\x80"  # 8-bit unsigned PCM, silence = 128
+    sample_rate = 8000
+    channels = 1
+    bits = 8
+    byte_rate = sample_rate * channels * bits // 8
+    block_align = channels * bits // 8
+    data_size = len(audio_data)
+    file_size = 36 + data_size
+
+    return (
+        b"RIFF"
+        + struct.pack("<I", file_size)
+        + b"WAVE"
+        + b"fmt "
+        + struct.pack("<IHHIIHH", 16, 1, channels, sample_rate, byte_rate, block_align, bits)
+        + b"data"
+        + struct.pack("<I", data_size)
+        + audio_data
+    )
+
+
+def _ogg_crc(data: bytes) -> int:
+    """OGG CRC-32 (poly=0x04C11DB7, init=0, non-reflected — different from zlib)."""
+    crc = 0
+    for byte in data:
+        crc ^= byte << 24
+        for _ in range(8):
+            if crc & 0x80000000:
+                crc = ((crc << 1) ^ 0x04C11DB7) & 0xFFFFFFFF
+            else:
+                crc = (crc << 1) & 0xFFFFFFFF
+    return crc
+
+
+def _ogg_page(serial: int, seqno: int, granule: int, headertype: int, data: bytes) -> bytes:
+    """Build a single OGG page with correct CRC. Data must be < 255 bytes."""
+    assert len(data) < 255, "simplified: one segment only"
+    page = (
+        b"OggS\x00"
+        + bytes([headertype])
+        + struct.pack("<q", granule)   # granule_position (signed 64-bit LE)
+        + struct.pack("<I", serial)    # stream_serial_number
+        + struct.pack("<I", seqno)     # page_sequence_no
+        + b"\x00\x00\x00\x00"         # CRC placeholder
+        + b"\x01"                      # page_segments = 1
+        + bytes([len(data)])           # segment_table
+        + data
+    )
+    # Offset 22–25 is the CRC field
+    crc = _ogg_crc(page)
+    return page[:22] + struct.pack("<I", crc) + page[26:]
+
+
+def make_test_ogg() -> bytes:
+    """Generate a minimal valid OGG Opus file (mono 48 kHz, one silence frame).
+
+    Produces a structurally correct three-page stream: ID header, comment
+    header, and one 60 ms CELT silence frame. Accepted by Telegram as voice.
+    """
+    serial = 1
+
+    # Page 1 — Opus identification header (BOS)
+    id_header = (
+        b"OpusHead"
+        + b"\x01"                       # version
+        + b"\x01"                       # channels = 1 (mono)
+        + struct.pack("<H", 312)        # pre-skip
+        + struct.pack("<I", 48000)      # input_sample_rate
+        + struct.pack("<h", 0)          # output_gain
+        + b"\x00"                       # channel_mapping_family = 0
+    )
+    page1 = _ogg_page(serial, 0, 0, 0x02, id_header)
+
+    # Page 2 — Opus comment header
+    vendor = b"test"
+    comment_header = (
+        b"OpusTags"
+        + struct.pack("<I", len(vendor))
+        + vendor
+        + struct.pack("<I", 0)          # zero user comments
+    )
+    page2 = _ogg_page(serial, 1, 0, 0x00, comment_header)
+
+    # Page 3 — Audio data (EOS): CELT config 31, 60 ms, mono silence
+    # TOC byte: (31 << 3) | stereo=0 | code=0 = 0xF8
+    silence_frame = bytes([0xF8, 0xFF, 0xFE])
+    # granule = 2880 samples (60 ms × 48 000 Hz)
+    page3 = _ogg_page(serial, 2, 2880, 0x04, silence_frame)
+
+    return page1 + page2 + page3
+
+
 def save_temp_media(data: bytes, suffix: str) -> str:
     """Write data to a temporary file and return its path."""
     tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
