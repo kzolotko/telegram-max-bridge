@@ -526,8 +526,11 @@ def _extract_max_user_id(profile: dict, session: MaxSession) -> int | None:
     )
     if user_id:
         return int(user_id)
-    # Fall back to previously stored user_id in session
-    return session.load_user_id()
+    # Fall back to previously stored user_id in session (if it exists)
+    try:
+        return session.load_user_id()
+    except FileNotFoundError:
+        return None
 
 
 # ── Bridge configuration ─────────────────────────────────────────────────────
