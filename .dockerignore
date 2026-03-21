@@ -35,3 +35,8 @@ README.md
 TASKS.md
 *.example.yaml
 bridge.sh
+
+# Tests (not needed in container)
+tests/
+pytest.ini
+requirements-test.txt

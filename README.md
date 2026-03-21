@@ -159,6 +159,9 @@ pip install -r requirements.txt
 | `./bridge.sh docker logs` | Логи Docker |
 | `./bridge.sh docker status` | Статус контейнера |
 | `./bridge.sh docker build` | Пересобрать образ |
+| `./bridge.sh test` | Запустить E2E-тесты (мост должен быть запущен) |
+| `./bridge.sh test -k T01` | Запустить конкретный тест-кейс |
+| `./bridge.sh test -m media` | Запустить группу тестов по маркеру |
 
 ---
 
@@ -298,15 +301,58 @@ src/
 | Файлы/документы | ✅ |
 | Аудио | ✅ |
 | Голосовые сообщения | ✅ (передаются как аудио `.ogg`) |
+| Альбомы (несколько медиафайлов) | ✅ |
 | Ответы (reply) | ✅ |
 | Редактирование | ✅ |
+| Форматирование (bold, italic, underline, strikethrough) | ✅ |
+| Реакции | ✅ |
+| Опросы TG→MAX | ✅ (форматируются как текст `📊 ...`) |
+| Опросы MAX→TG | ➖ MAX не поддерживает polls |
+| Голосовые MAX→TG | ➖ MAX не поддерживает голосовые сообщения |
+| Стикеры | ⚠️ заменяются на `[Sticker]` |
 | Удаление MAX→TG | ⚠️ работает для сообщений других пользователей (MAX не уведомляет об удалении собственных) |
 | Удаление TG→MAX | ⚠️ работает в супергруппах (Pyrogram не сообщает `chat_id` в обычных группах) |
-| Стикеры | ⚠️ заменяются на `[Sticker]` |
+| Code/pre/text_link форматирование | ⚠️ передаётся как plain text (MAX не поддерживает) |
 | Несколько пользователей | ✅ sender routing + primary listener |
-| Форматирование (bold, italic) | ❌ не сохраняется |
-| Реакции | ❌ |
-| Опросы | ❌ |
+| Reply/edit/delete после перезапуска | ⚠️ теряются (in-memory store, нет персистентности) |
+
+---
+
+## E2E-тестирование
+
+Полный набор автоматизированных тестов через реальные аккаунты TG и MAX.
+
+### Подготовка
+
+```bash
+pip install -r requirements-test.txt
+
+# Авторизовать отдельную TG-сессию для тестов
+python -m tests.e2e.auth_e2e
+
+# Создать конфиг теста
+cp tests/e2e/e2e_config.example.yaml tests/e2e/e2e_config.yaml
+nano tests/e2e/e2e_config.yaml   # заполнить user_name, tg_chat_id, max_chat_id
+```
+
+### Запуск
+
+```bash
+# Все тесты
+./bridge.sh test
+
+# Конкретный кейс
+./bridge.sh test -k T01
+
+# Группа тестов
+./bridge.sh test -m formatting
+./bridge.sh test -m media
+./bridge.sh test -m reaction
+```
+
+> **Важно:** мост должен быть запущен (`./bridge.sh start` или `./bridge.sh docker up`) во время прогона тестов.
+
+После прогона `tests/e2e/TEST_CASES.md` автоматически обновляется со статусами и временем последнего запуска.
 
 ---
 

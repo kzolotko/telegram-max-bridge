@@ -19,6 +19,7 @@ Local commands:
   setup credentials       Set up Telegram API credentials only
   setup bridges           Configure users and chat bridges
   auth                    Authenticate accounts (reads config.yaml)
+  test [pytest args]      Run E2E tests (bridge must be running)
 
 Docker commands:
   docker up               Build image and start in background
@@ -34,6 +35,9 @@ Examples:
   ./bridge.sh docker up           # run in Docker
   ./bridge.sh docker logs         # watch logs
   ./bridge.sh docker restart      # apply config changes
+  ./bridge.sh test                # run all E2E tests
+  ./bridge.sh test -k T01         # run a specific test case
+  ./bridge.sh test -m formatting  # run tests by marker
 EOF
 }
 
@@ -47,6 +51,10 @@ cmd_setup() {
 
 cmd_auth() {
     exec python -m src.auth "$@"
+}
+
+cmd_test() {
+    exec python -m pytest tests/e2e/ -v "$@"
 }
 
 cmd_docker() {
@@ -91,6 +99,7 @@ case "$command" in
     start)          cmd_start "$@" ;;
     setup)          cmd_setup "$@" ;;
     auth)           cmd_auth "$@" ;;
+    test)           cmd_test "$@" ;;
     docker)         cmd_docker "$@" ;;
     help|-h|--help) usage ;;
     "")             usage; exit 1 ;;
