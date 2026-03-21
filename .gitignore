@@ -12,3 +12,4 @@ sessions/
 .DS_Store
 .env
 .claude/
+tests/e2e/e2e_config.yaml

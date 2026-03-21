@@ -1,0 +1,19 @@
+# E2E Test Configuration
+# Copy this file to e2e_config.yaml and fill in the values.
+#
+# Prerequisites:
+#   1. Bridge is set up (credentials.yaml + config.yaml exist)
+#   2. E2E TG session is authenticated:
+#      python -m tests.e2e.auth_e2e
+#   3. Bridge is RUNNING in a separate terminal:
+#      ./bridge.sh start
+
+# User name — must match a user in config.yaml
+user_name: kzolotko
+
+# Chat pair to test against (must match a bridge in config.yaml)
+tg_chat_id: -1001234567890
+max_chat_id: -72099589405396
+
+# Seconds to wait for a bridged message to arrive
+timeout: 15
