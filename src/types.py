@@ -55,3 +55,4 @@ class BridgeEvent:
     edit_source_msg_id: Optional[int | str] = None
     delete_source_msg_id: Optional[int | str] = None
     source_msg_id: Optional[int | str] = None
+    formatting: Optional[list[dict]] = None  # platform-agnostic formatting entities

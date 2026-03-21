@@ -1,12 +1,20 @@
 import io
 import logging
 
+from pyrogram import enums as tg_enums
+
 from ..config import ConfigLookup
 from ..message_store import MessageStore
 from ..telegram.client_pool import TelegramClientPool
 from ..max.client_pool import MaxClientPool
 from ..types import BridgeEvent
-from .formatting import prepend_sender_name, MIRROR_MARKER
+from .formatting import (
+    MIRROR_MARKER,
+    prepend_sender_name,
+    prepend_sender_name_fmt,
+    internal_to_max_elements,
+    internal_to_tg_html,
+)
 from .mirror_tracker import MirrorTracker
 
 log = logging.getLogger("bridge.core")
@@ -48,6 +56,8 @@ class Bridge:
                 entry.telegram_chat_id, event.sender_user_id
             )
 
+        fmt = event.formatting
+
         if sender_entry:
             # Sender has a bridge account — use their MAX account, no prefix.
             max_user_id = sender_entry.user.max_user_id
@@ -57,11 +67,14 @@ class Bridge:
         else:
             # Unknown sender — use primary's MAX account with [Name]: prefix.
             max_user_id = entry.user.max_user_id
-            text = prepend_sender_name(event.sender_display_name, event.text or "")
+            text, fmt = prepend_sender_name_fmt(
+                event.sender_display_name, event.text or "", fmt,
+            )
             log.debug("tg→max (primary=%s) type=%s text=%r",
                       entry.user.name, event.event_type, text[:50])
 
         max_chat_id = entry.max_chat_id
+        max_elements = internal_to_max_elements(fmt) or None
 
         # Resolve reply target
         reply_to = None
@@ -69,7 +82,9 @@ class Bridge:
             reply_to = self.store.get_max_msg_id(entry.name, int(event.reply_to_source_msg_id))
 
         if event.event_type == "text":
-            max_msg_id = await self.max_pool.send_text(max_user_id, max_chat_id, text, reply_to)
+            max_msg_id = await self.max_pool.send_text(
+                max_user_id, max_chat_id, text, reply_to, elements=max_elements,
+            )
             if max_msg_id and event.source_msg_id is not None:
                 self.store.store(entry.name, int(event.source_msg_id), max_msg_id)
                 self.mirrors.mark_max(max_msg_id)
@@ -115,9 +130,16 @@ class Bridge:
                 max_msg_id = self.store.get_max_msg_id(entry.name, int(event.edit_source_msg_id))
                 if max_msg_id:
                     edit_text = event.text or ""
+                    edit_fmt = fmt
                     if not sender_entry:
-                        edit_text = prepend_sender_name(event.sender_display_name, edit_text)
-                    await self.max_pool.edit_text(max_user_id, max_chat_id, max_msg_id, edit_text)
+                        edit_text, edit_fmt = prepend_sender_name_fmt(
+                            event.sender_display_name, edit_text, edit_fmt,
+                        )
+                    edit_elements = internal_to_max_elements(edit_fmt) or None
+                    await self.max_pool.edit_text(
+                        max_user_id, max_chat_id, max_msg_id, edit_text,
+                        elements=edit_elements,
+                    )
 
         elif event.event_type == "delete":
             if event.delete_source_msg_id is not None:
@@ -131,6 +153,7 @@ class Bridge:
 
     async def _max_to_tg(self, event: BridgeEvent):
         entry = event.bridge_entry  # primary entry (from listener)
+        fmt = event.formatting
 
         # Try to route via the sender's own TG account (authorship match).
         sender_entry = None
@@ -148,7 +171,9 @@ class Bridge:
         else:
             # Unknown sender — use primary's TG account with [Name]: prefix.
             client = self.tg_pool.get_client(entry.user.telegram_user_id)
-            text = prepend_sender_name(event.sender_display_name, event.text or "")
+            text, fmt = prepend_sender_name_fmt(
+                event.sender_display_name, event.text or "", fmt,
+            )
             log.debug("max→tg (primary=%s) type=%s text=%r",
                       entry.user.name, event.event_type, text[:50])
 
@@ -157,35 +182,42 @@ class Bridge:
             return
 
         tg_chat_id = entry.telegram_chat_id
+        # Convert formatting to HTML if present
+        has_html = bool(fmt)
+        html_text = internal_to_tg_html(text, fmt) if has_html else text
 
         # Resolve reply target
         reply_to = None
         if event.reply_to_source_msg_id is not None:
             reply_to = self.store.get_tg_msg_id(entry.name, str(event.reply_to_source_msg_id))
 
+        
         if event.event_type == "text":
+            send_text = MIRROR_MARKER + (html_text if has_html else text)
             msg = await client.send_message(
-                tg_chat_id, MIRROR_MARKER + text,
+                tg_chat_id, send_text,
                 reply_to_message_id=reply_to,
+                parse_mode=tg_enums.ParseMode.HTML if has_html else tg_enums.ParseMode.DISABLED,
             )
             if event.source_msg_id is not None:
                 self.store.store(entry.name, msg.id, str(event.source_msg_id))
             self.mirrors.mark_tg(msg.id)
 
         elif event.event_type == "photo" and event.media:
-            caption = (MIRROR_MARKER + text) if text else MIRROR_MARKER
+            caption = MIRROR_MARKER + (html_text if has_html else text) if text else MIRROR_MARKER
             buf = io.BytesIO(event.media.data)
             buf.name = event.media.filename
             msg = await client.send_photo(
                 tg_chat_id, buf, caption=caption,
                 reply_to_message_id=reply_to,
+                parse_mode=tg_enums.ParseMode.HTML if has_html else tg_enums.ParseMode.DISABLED,
             )
             if event.source_msg_id is not None:
                 self.store.store(entry.name, msg.id, str(event.source_msg_id))
             self.mirrors.mark_tg(msg.id)
 
         elif event.event_type in ("video", "audio", "file") and event.media:
-            caption = (MIRROR_MARKER + text) if text else MIRROR_MARKER
+            caption = MIRROR_MARKER + (html_text if has_html else text) if text else MIRROR_MARKER
             buf = io.BytesIO(event.media.data)
             buf.name = event.media.filename
             send_fn = {
@@ -196,6 +228,7 @@ class Bridge:
             msg = await send_fn(
                 tg_chat_id, buf, caption=caption,
                 reply_to_message_id=reply_to,
+                parse_mode=tg_enums.ParseMode.HTML if has_html else tg_enums.ParseMode.DISABLED,
             )
             if event.source_msg_id is not None:
                 self.store.store(entry.name, msg.id, str(event.source_msg_id))
@@ -206,6 +239,7 @@ class Bridge:
             msg = await client.send_message(
                 tg_chat_id, MIRROR_MARKER + fallback,
                 reply_to_message_id=reply_to,
+                parse_mode=tg_enums.ParseMode.DISABLED,
             )
             if event.source_msg_id is not None:
                 self.store.store(entry.name, msg.id, str(event.source_msg_id))
@@ -218,6 +252,7 @@ class Bridge:
             msg = await client.send_message(
                 tg_chat_id, MIRROR_MARKER + sticker_text,
                 reply_to_message_id=reply_to,
+                parse_mode=tg_enums.ParseMode.DISABLED,
             )
             if event.source_msg_id is not None:
                 self.store.store(entry.name, msg.id, str(event.source_msg_id))
@@ -228,10 +263,17 @@ class Bridge:
                 tg_msg_id = self.store.get_tg_msg_id(entry.name, str(event.edit_source_msg_id))
                 if tg_msg_id:
                     edit_text = event.text or ""
+                    edit_fmt = fmt
                     if not sender_entry:
-                        edit_text = prepend_sender_name(event.sender_display_name, edit_text)
+                        edit_text, edit_fmt = prepend_sender_name_fmt(
+                            event.sender_display_name, edit_text, edit_fmt,
+                        )
+                    edit_has_html = bool(edit_fmt)
+                    edit_html = internal_to_tg_html(edit_text, edit_fmt) if edit_has_html else edit_text
+                    send_edit = MIRROR_MARKER + (edit_html if edit_has_html else edit_text)
                     await client.edit_message_text(
-                        tg_chat_id, tg_msg_id, MIRROR_MARKER + edit_text
+                        tg_chat_id, tg_msg_id, send_edit,
+                        parse_mode=tg_enums.ParseMode.HTML if edit_has_html else tg_enums.ParseMode.DISABLED,
                     )
 
         elif event.event_type == "delete":

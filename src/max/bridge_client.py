@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
 from uuid import UUID
 
@@ -90,8 +91,16 @@ class BridgeMaxClient:
         chat_id: int,
         text: str,
         reply_to: int | None = None,
+        elements: list[dict] | None = None,
     ) -> dict[str, Any]:
-        """Send a text message, optionally as a reply."""
+        """Send a text message, optionally as a reply.
+
+        If *elements* are provided they are sent directly, bypassing PyMax's
+        own markdown parser (which would conflict with bridge-managed formatting).
+        """
+        if elements is not None:
+            return await self._send_message_raw(chat_id, text, reply_to, elements)
+
         msg = await self.inner.send_message(
             text=text,
             chat_id=chat_id,
@@ -102,13 +111,54 @@ class BridgeMaxClient:
             return {}
         return {"payload": {"message": {"id": msg.id, "chatId": msg.chat_id}}}
 
+    async def _send_message_raw(
+        self,
+        chat_id: int,
+        text: str,
+        reply_to: int | None,
+        elements: list[dict],
+    ) -> dict[str, Any]:
+        """Send message with explicit elements, bypassing PyMax markdown parsing."""
+        link = None
+        if reply_to:
+            link = {"type": "REPLY", "messageId": str(reply_to)}
+
+        payload = {
+            "chatId": chat_id,
+            "message": {
+                "text": text,
+                "cid": int(time.time() * 1000),
+                "elements": elements,
+                "attaches": [],
+                **({"link": link} if link else {}),
+            },
+            "notify": False,
+        }
+
+        data = await self.inner._send_and_wait(
+            opcode=Opcode(64),  # MSG_SEND
+            payload=payload,
+        )
+        if not data or not data.get("payload"):
+            return {}
+        msg = data["payload"].get("message", {})
+        return {"payload": {"message": {"id": msg.get("id"), "chatId": msg.get("chatId")}}}
+
     async def edit_message(
         self,
         chat_id: int,
         message_id: int,
         text: str,
+        elements: list[dict] | None = None,
     ) -> dict[str, Any]:
-        """Edit an existing message."""
+        """Edit an existing message.
+
+        If *elements* are provided they are sent directly, bypassing PyMax's
+        own markdown parser.
+        """
+        if elements is not None:
+            return await self._edit_message_raw(chat_id, message_id, text, elements)
+
         msg = await self.inner.edit_message(
             chat_id=chat_id,
             message_id=message_id,
@@ -117,6 +167,31 @@ class BridgeMaxClient:
         if msg is None:
             return {}
         return {"payload": {"message": {"id": msg.id, "chatId": msg.chat_id}}}
+
+    async def _edit_message_raw(
+        self,
+        chat_id: int,
+        message_id: int,
+        text: str,
+        elements: list[dict],
+    ) -> dict[str, Any]:
+        """Edit message with explicit elements, bypassing PyMax markdown parsing."""
+        payload = {
+            "chatId": chat_id,
+            "messageId": message_id,
+            "text": text,
+            "elements": elements,
+            "attaches": [],
+        }
+
+        data = await self.inner._send_and_wait(
+            opcode=Opcode(67),  # MSG_EDIT
+            payload=payload,
+        )
+        if not data or not data.get("payload"):
+            return {}
+        msg = data["payload"].get("message", {})
+        return {"payload": {"message": {"id": msg.get("id"), "chatId": msg.get("chatId")}}}
 
     async def delete_message(
         self,

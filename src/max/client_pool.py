@@ -84,6 +84,7 @@ class MaxClientPool:
         chat_id: int,
         text: str,
         reply_to: str | None = None,
+        elements: list[dict] | None = None,
     ) -> str | None:
         client = self._clients.get(max_user_id) if max_user_id else self.get_any_client()
         if not client:
@@ -93,6 +94,7 @@ class MaxClientPool:
             chat_id=chat_id,
             text=text,
             reply_to=int(reply_to) if reply_to else None,
+            elements=elements,
         )
 
         return self._extract_msg_id(response)
@@ -103,6 +105,7 @@ class MaxClientPool:
         chat_id: int,
         message_id: str,
         text: str,
+        elements: list[dict] | None = None,
     ):
         client = self._clients.get(max_user_id) if max_user_id else self.get_any_client()
         if not client:
@@ -112,6 +115,7 @@ class MaxClientPool:
             chat_id=chat_id,
             message_id=int(message_id),
             text=text,
+            elements=elements,
         )
 
     async def delete_msg(

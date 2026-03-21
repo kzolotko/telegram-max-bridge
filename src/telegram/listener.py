@@ -5,7 +5,7 @@ from pyrogram import Client, filters
 from pyrogram.types import Message
 from pyrogram.handlers import MessageHandler, EditedMessageHandler, DeletedMessagesHandler
 
-from ..bridge.formatting import MIRROR_MARKER
+from ..bridge.formatting import MIRROR_MARKER, tg_entities_to_internal
 from ..bridge.mirror_tracker import MirrorTracker
 from ..config import ConfigLookup
 from ..types import AppConfig, BridgeEvent, MediaInfo, UserMapping
@@ -86,6 +86,9 @@ class TelegramListener:
 
             if message.photo:
                 media = await self._download_media(message)
+                cap_fmt = tg_entities_to_internal(
+                    message.caption or "", message.caption_entities,
+                )
                 await self.on_event(BridgeEvent(
                     direction="tg-to-max",
                     bridge_entry=bridge_entry,
@@ -96,9 +99,13 @@ class TelegramListener:
                     media=media,
                     reply_to_source_msg_id=reply_to,
                     source_msg_id=message.id,
+                    formatting=cap_fmt or None,
                 ))
             elif message.video:
                 media = await self._download_media(message)
+                cap_fmt = tg_entities_to_internal(
+                    message.caption or "", message.caption_entities,
+                )
                 await self.on_event(BridgeEvent(
                     direction="tg-to-max",
                     bridge_entry=bridge_entry,
@@ -109,11 +116,15 @@ class TelegramListener:
                     media=media,
                     reply_to_source_msg_id=reply_to,
                     source_msg_id=message.id,
+                    formatting=cap_fmt or None,
                 ))
             elif message.document:
                 media = await self._download_media(message)
                 if media:
                     media.filename = message.document.file_name or media.filename
+                cap_fmt = tg_entities_to_internal(
+                    message.caption or "", message.caption_entities,
+                )
                 await self.on_event(BridgeEvent(
                     direction="tg-to-max",
                     bridge_entry=bridge_entry,
@@ -124,9 +135,13 @@ class TelegramListener:
                     media=media,
                     reply_to_source_msg_id=reply_to,
                     source_msg_id=message.id,
+                    formatting=cap_fmt or None,
                 ))
             elif message.audio or message.voice:
                 media = await self._download_media(message)
+                cap_fmt = tg_entities_to_internal(
+                    message.caption or "", message.caption_entities,
+                )
                 await self.on_event(BridgeEvent(
                     direction="tg-to-max",
                     bridge_entry=bridge_entry,
@@ -137,6 +152,7 @@ class TelegramListener:
                     media=media,
                     reply_to_source_msg_id=reply_to,
                     source_msg_id=message.id,
+                    formatting=cap_fmt or None,
                 ))
             elif message.sticker:
                 await self.on_event(BridgeEvent(
@@ -150,6 +166,7 @@ class TelegramListener:
                     source_msg_id=message.id,
                 ))
             elif message.text:
+                text_fmt = tg_entities_to_internal(message.text, message.entities)
                 await self.on_event(BridgeEvent(
                     direction="tg-to-max",
                     bridge_entry=bridge_entry,
@@ -159,6 +176,7 @@ class TelegramListener:
                     text=message.text,
                     reply_to_source_msg_id=reply_to,
                     source_msg_id=message.id,
+                    formatting=text_fmt or None,
                 ))
             # Cache msg_id → chat_id for delete lookup in regular groups
             self._cache_msg_chat(message.id, message.chat.id)
@@ -190,15 +208,20 @@ class TelegramListener:
             sender_name = self._get_sender_name(message)
             sender_id = message.from_user.id if message.from_user else None
 
+            edit_text = message.text or message.caption or ""
+            edit_entities = message.entities if message.text else message.caption_entities
+            edit_fmt = tg_entities_to_internal(edit_text, edit_entities)
+
             await self.on_event(BridgeEvent(
                 direction="tg-to-max",
                 bridge_entry=bridge_entry,
                 sender_display_name=sender_name,
                 sender_user_id=sender_id,
                 event_type="edit",
-                text=message.text or message.caption,
+                text=edit_text or None,
                 edit_source_msg_id=message.id,
                 source_msg_id=message.id,
+                formatting=edit_fmt or None,
             ))
         except Exception as e:
             log.error("Error handling edited message: %s", e)

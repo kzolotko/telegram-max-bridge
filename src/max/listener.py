@@ -3,6 +3,7 @@ import logging
 from typing import Callable, Awaitable, Any
 
 from .bridge_client import BridgeMaxClient
+from ..bridge.formatting import max_elements_to_internal
 from ..bridge.mirror_tracker import MirrorTracker
 from ..config import ConfigLookup
 from ..types import AppConfig, BridgeEvent, MediaInfo, UserMapping
@@ -289,6 +290,8 @@ class MaxListener:
 
         sender_name = self._resolve_sender_name(sender_id)
         text = message.get("text")
+        elements = message.get("elements")
+        fmt = max_elements_to_internal(elements) or None
         attaches = message.get("attaches", [])
 
         reply_to = None
@@ -340,6 +343,7 @@ class MaxListener:
                         media=media,
                         reply_to_source_msg_id=reply_to,
                         source_msg_id=msg_id,
+                        formatting=fmt,
                     ))
                 else:
                     label = att_type.capitalize()
@@ -378,6 +382,7 @@ class MaxListener:
                 text=text,
                 reply_to_source_msg_id=reply_to,
                 source_msg_id=msg_id,
+                formatting=fmt,
             ))
 
     async def _handle_notif_edit(self, chat_id, message: dict, msg_id: str, sender_id):
@@ -391,6 +396,8 @@ class MaxListener:
             return
         sender_name = self._resolve_sender_name(sender_id) if sender_id else "Unknown"
         text = message.get("text")
+        elements = message.get("elements")
+        fmt = max_elements_to_internal(elements) or None
         log.debug("MAX edit: chat=%s msg=%s sender=%s", chat_id, msg_id, sender_id)
         await self.on_event(BridgeEvent(
             direction="max-to-tg",
@@ -401,6 +408,7 @@ class MaxListener:
             text=text,
             edit_source_msg_id=msg_id,
             source_msg_id=msg_id,
+            formatting=fmt,
         ))
 
     async def _handle_notif_delete(self, chat_id, message_ids: list):
