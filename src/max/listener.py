@@ -71,9 +71,18 @@ class MaxListener:
         return self._my_user_id
 
     async def _connect(self):
-        self.client = BridgeMaxClient(token=self._login_token, device_id=self._device_id)
-        self.client.set_raw_callback(self._handle_packet)
-        await self.client.connect_and_login()
+        # Close previous client to avoid resource leak
+        if self.client:
+            try:
+                await self.client.disconnect()
+            except Exception:
+                pass
+            self.client = None
+
+        client = BridgeMaxClient(token=self._login_token, device_id=self._device_id)
+        client.set_raw_callback(self._handle_packet)
+        await client.connect_and_login()
+        self.client = client
         # Pre-populate name cache with members of bridged MAX chats
         await self._preload_chat_members()
 
@@ -89,16 +98,18 @@ class MaxListener:
             if self._stopped:
                 break
 
-            log.warning("Connection lost. Reconnecting in %ds...", delay)
+            log.warning("MAX listener %s: connection lost. Reconnecting in %ds...",
+                        self.user.name, delay)
             await asyncio.sleep(delay)
             delay = min(delay * 2, RECONNECT_MAX_DELAY)
 
             try:
                 await self._connect()
                 delay = RECONNECT_BASE_DELAY
-                log.info("Reconnected (User ID: %d)", self._my_user_id)
+                log.info("MAX listener %s: reconnected (User ID: %d)",
+                         self.user.name, self._my_user_id)
             except Exception as e:
-                log.error("Reconnect failed: %s", e)
+                log.error("MAX listener %s: reconnect failed: %s", self.user.name, e)
 
     async def stop(self):
         self._stopped = True

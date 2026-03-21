@@ -78,7 +78,6 @@
 | 🔴 High | Асимметричные пользователи | Опциональность `telegram_user_id` / `max_user_id` — пользователь только в одном мессенджере |
 | 🟡 Medium | Несколько медиафайлов в сообщении | Сейчас обрабатывается только первый аттач |
 | 🟡 Medium | E2E-автотесты | Автоматический прогон тест-кейсов через реальные аккаунты |
-| 🟡 Medium | Graceful reconnect | Проверить сценарий длительного отключения MAX |
 | 🟢 Low | Healthcheck endpoint | HTTP `/health` для Docker healthcheck |
 | 🟢 Low | Метрики | Счётчики переданных сообщений |
 | 🟢 Low | Реакции | Синхронизация emoji-реакций |
@@ -106,6 +105,7 @@
 | ✅ Тёплый кэш Pyrogram peer | `get_dialogs()` перед `get_chat()` устраняет ошибку «Peer id invalid» для обычных TG-групп |
 | ✅ Стабилизация повторного подключения MAX в setup | Пауза 2 с между MAX-сессиями предотвращает ошибки «Connection lost / Failed to unpack packet» |
 | ✅ Форматирование текста (bold/italic/code) | Конвертация TG entities ↔ MAX elements. Bold, italic, underline, strikethrough — в обе стороны. Code/pre/text_link — TG→MAX без форматирования (только текст) |
+| ✅ Graceful reconnect | Pool-клиенты MAX автоматически переподключаются при обрыве; retry отправки после reconnect; MirrorTracker с LRU-eviction (10k); health-check каждые 5 мин |
 
 ---
 

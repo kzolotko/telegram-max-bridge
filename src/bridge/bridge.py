@@ -42,7 +42,8 @@ class Bridge:
             else:
                 await self._max_to_tg(event)
         except Exception as e:
-            log.error("Error %s %s: %s", event.direction, event.event_type, e)
+            log.error("Error %s %s: %s", event.direction, event.event_type, e,
+                      exc_info=True)
 
     # ── TG → MAX ─────────────────────────────────────────────────────────────
 

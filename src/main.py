@@ -101,7 +101,33 @@ async def main():
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, _shutdown)
 
+    # Periodic health check — log connection status every 5 minutes
+    async def _health_loop():
+        while not shutdown_event.is_set():
+            try:
+                await asyncio.wait_for(shutdown_event.wait(), timeout=300)
+                break  # shutdown signalled
+            except asyncio.TimeoutError:
+                pass
+            # Log MAX pool status
+            for uid in max_pool.get_all_user_ids():
+                client = max_pool.get_client(uid)
+                status = "connected" if (client and client.is_connected) else "DISCONNECTED"
+                log.info("Health: MAX pool user %s — %s", uid, status)
+            # Log MAX listener status
+            for listener in max_listeners:
+                client = listener.client
+                status = "connected" if (client and client.is_connected) else "DISCONNECTED"
+                log.info("Health: MAX listener %s — %s", listener.user.name, status)
+
+    health_task = asyncio.create_task(_health_loop())
+
     await shutdown_event.wait()
+    health_task.cancel()
+    try:
+        await health_task
+    except asyncio.CancelledError:
+        pass
 
     for listener in tg_listeners:
         await listener.stop()
