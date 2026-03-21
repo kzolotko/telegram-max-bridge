@@ -53,6 +53,7 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "echo: echo loop tests")
     config.addinivalue_line("markers", "edge: edge case tests")
     config.addinivalue_line("markers", "reaction: reaction tests")
+    config.addinivalue_line("markers", "media: media/photo/video/album tests")
 
 
 def pytest_runtest_logreport(report):

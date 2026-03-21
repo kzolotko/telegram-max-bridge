@@ -25,6 +25,15 @@ from pyrogram.handlers import (
 from pyrogram.types import Message
 
 from src.max.bridge_client import BridgeMaxClient
+from src.max.media import (
+    get_upload_url,
+    upload_photo_to_url,
+    get_file_upload_url,
+    upload_file_to_url,
+    send_photo_message,
+    send_file_message,
+    send_multi_media_message,
+)
 
 log = logging.getLogger("e2e.clients")
 
@@ -120,6 +129,13 @@ class TgTestClient:
     async def send_photo(self, path: str, caption: str = "") -> Message:
         return await self._client.send_photo(self.chat_id, path, caption=caption)
 
+    async def send_video(self, path: str, caption: str = "") -> Message:
+        return await self._client.send_video(self.chat_id, path, caption=caption)
+
+    async def send_media_group(self, media: list) -> list[Message]:
+        """Send an album (list of InputMediaPhoto / InputMediaVideo)."""
+        return await self._client.send_media_group(self.chat_id, media)
+
     async def send_reaction(self, msg_id: int, emoji: str | None) -> None:
         await self._client.send_reaction(
             self.chat_id, msg_id, [emoji] if emoji else []
@@ -150,6 +166,44 @@ class TgTestClient:
                     return evt
             except asyncio.TimeoutError:
                 return None
+
+    async def wait_for_album(
+        self,
+        predicate: Callable[[ReceivedEvent], bool],
+        timeout: float = 15.0,
+        collect_timeout: float = 2.0,
+    ) -> list[ReceivedEvent]:
+        """Wait for the first album message matching *predicate*, then collect
+        remaining messages with the same ``media_group_id``.
+
+        Returns a list of ReceivedEvents (one per album item), or [] on timeout.
+        """
+        first = await self.wait_for(predicate, timeout=timeout)
+        if first is None:
+            return []
+        group_id = getattr(first.raw, "media_group_id", None)
+        if not group_id:
+            return [first]
+
+        # Collect remaining album items
+        album = [first]
+        deadline = asyncio.get_event_loop().time() + collect_timeout
+        while True:
+            remaining = deadline - asyncio.get_event_loop().time()
+            if remaining <= 0:
+                break
+            try:
+                evt = await asyncio.wait_for(self._queue.get(), timeout=remaining)
+                raw_gid = getattr(evt.raw, "media_group_id", None)
+                if evt.kind == "message" and raw_gid == group_id:
+                    album.append(evt)
+                else:
+                    # Put non-matching event back (best effort — prepend impossible,
+                    # so we just re-queue; order may shift but it's acceptable for tests)
+                    await self._queue.put(evt)
+            except asyncio.TimeoutError:
+                break
+        return album
 
     def drain(self) -> list[ReceivedEvent]:
         """Drain all currently queued events (non-blocking). Useful for cleanup."""
@@ -274,6 +328,54 @@ class MaxTestClient:
 
     async def delete_messages(self, msg_ids: list[str]) -> None:
         await self._client.delete_message(self.chat_id, [int(m) for m in msg_ids])
+
+    async def send_photo(
+        self, data: bytes, filename: str = "photo.jpg", caption: str = "",
+    ) -> str | None:
+        """Upload a photo and send it. Returns MAX msg_id."""
+        upload_url = await get_upload_url(self._client)
+        token = await upload_photo_to_url(upload_url, data, filename)
+        resp = await send_photo_message(self._client, self.chat_id, token, caption)
+        payload = resp.get("payload", {})
+        msg = payload.get("message", {})
+        return str(msg.get("id")) if msg.get("id") else None
+
+    async def send_file(
+        self, data: bytes, filename: str, content_type: str = "application/octet-stream",
+        caption: str = "",
+    ) -> str | None:
+        """Upload a file/video and send it. Returns MAX msg_id."""
+        upload_url = await get_file_upload_url(self._client)
+        file_info = await upload_file_to_url(upload_url, data, filename, content_type)
+        resp = await send_file_message(self._client, self.chat_id, file_info, caption)
+        payload = resp.get("payload", {})
+        msg = payload.get("message", {})
+        return str(msg.get("id")) if msg.get("id") else None
+
+    async def send_media_multi(
+        self, items: list[tuple[bytes, str, str]], caption: str = "",
+    ) -> str | None:
+        """Upload multiple media items and send as one message.
+
+        *items*: list of (data, filename, mime_type) tuples.
+        Returns MAX msg_id.
+        """
+        attaches: list[dict] = []
+        for data, fname, mime in items:
+            if mime.startswith("image/"):
+                url = await get_upload_url(self._client)
+                token = await upload_photo_to_url(url, data, fname)
+                attaches.append({"_type": "PHOTO", "photoToken": token})
+            else:
+                url = await get_file_upload_url(self._client)
+                file_info = await upload_file_to_url(url, data, fname, mime)
+                attaches.append(file_info)
+        resp = await send_multi_media_message(
+            self._client, self.chat_id, attaches, caption,
+        )
+        payload = resp.get("payload", {})
+        msg = payload.get("message", {})
+        return str(msg.get("id")) if msg.get("id") else None
 
     async def add_reaction(self, msg_id: str, emoji: str) -> None:
         await self._client.add_reaction(self.chat_id, msg_id, emoji)
