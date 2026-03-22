@@ -46,7 +46,7 @@ class E2EConfig:
 
 # Fixed UUID for the test MAX client — avoids creating a new "device" entry
 # on the MAX server every run.  Override via e2e_config.yaml if needed.
-_DEFAULT_TEST_DEVICE_ID = "e2e00000-test-4000-a000-000000000001"
+_DEFAULT_TEST_DEVICE_ID = "e2e00000-cafe-4000-a000-000000000001"
 
 _CONFIG_PATH = Path(__file__).resolve().parent / "e2e_config.yaml"
 _EXAMPLE_PATH = Path(__file__).resolve().parent / "e2e_config.example.yaml"

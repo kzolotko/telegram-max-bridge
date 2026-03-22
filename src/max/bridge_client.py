@@ -244,8 +244,15 @@ class BridgeMaxClient:
         return self._inner._recv_task
 
     async def disconnect(self) -> None:
-        """Clean shutdown."""
+        """Clean shutdown — cancel all pymax background tasks then close socket."""
         if self._inner is not None:
+            # _cleanup_client() cancels recv_task, outgoing_task and all
+            # background tasks (ping etc.) started by _post_login_tasks().
+            # The base close() is a no-op, so we must call this explicitly.
+            try:
+                await self._inner._cleanup_client()
+            except Exception:
+                pass
             try:
                 await self._inner.close()
             except Exception:

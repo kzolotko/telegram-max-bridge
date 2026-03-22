@@ -15,6 +15,7 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable
+from uuid import uuid4
 
 from pyrogram import Client, filters
 from pyrogram.handlers import (
@@ -99,6 +100,17 @@ class TgTestClient:
 
     async def start(self) -> None:
         await self._client.start()
+
+        # Warm up peer cache: the test session is fresh and may not know the
+        # chat_id yet.  get_dialogs() fetches peers directly from Telegram and
+        # stores them in the local SQLite, so resolve_peer() can find them
+        # without falling back to get_peer_type() (which rejects non-standard
+        # group IDs like -4845290322 that exceed MIN_CHAT_ID = -2147483647).
+        try:
+            async for _ in self._client.get_dialogs():
+                pass
+        except Exception as exc:
+            log.warning("TG test client: get_dialogs failed (peer cache may be empty): %s", exc)
 
         chat_filter = filters.chat(self.chat_id)
         self._client.add_handler(MessageHandler(self._on_message, chat_filter))
@@ -329,8 +341,12 @@ class MaxTestClient:
         self._queue: asyncio.Queue[ReceivedEvent] = asyncio.Queue()
 
     async def start(self) -> None:
+        # Use a fresh device_id every run so MAX treats this as a brand-new
+        # device and skips the reconnect-state handshake (a session-resume
+        # packet that pymax can't decode, causing the LOGIN to time out).
+        fresh_device_id = str(uuid4())
         self._client = BridgeMaxClient(
-            token=self._token, device_id=self._device_id,
+            token=self._token, device_id=fresh_device_id,
         )
         self._client.set_raw_callback(self._on_packet)
         await self._client.connect_and_login()

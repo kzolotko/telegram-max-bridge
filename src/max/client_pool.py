@@ -15,7 +15,8 @@ log = logging.getLogger("bridge.max.pool")
 
 # Number of automatic retry attempts after reconnecting on send failure.
 _MAX_RETRIES = 1
-_RECONNECT_DELAY = 2  # seconds before reconnect attempt
+_RECONNECT_DELAY = 5          # seconds before first reconnect attempt
+_RECONNECT_MAX_DELAY = 120    # cap for exponential backoff
 
 
 class MaxClientPool:
@@ -32,6 +33,7 @@ class MaxClientPool:
         self._credentials: dict[int, tuple[str, str]] = {}  # max_user_id -> (token, device_id)
         self._user_ids: list[int] = []
         self._reconnect_locks: dict[int, asyncio.Lock] = {}  # prevent parallel reconnects
+        self._reconnect_delays: dict[int, float] = {}        # exponential backoff state
 
     async def init(self, users: list[UserMapping]) -> list[int]:
         """Initialize clients for all users. Returns list of MAX user IDs."""
@@ -55,6 +57,7 @@ class MaxClientPool:
             # Store credentials for reconnection
             self._credentials[user.max_user_id] = (login_token, device_id)
             self._reconnect_locks[user.max_user_id] = asyncio.Lock()
+            self._reconnect_delays[user.max_user_id] = _RECONNECT_DELAY
 
             client = BridgeMaxClient(token=login_token, device_id=device_id)
             await client.connect_and_login()
@@ -94,7 +97,11 @@ class MaxClientPool:
                 return existing
 
             token, device_id = creds
-            log.warning("Pool client %s disconnected — reconnecting...", max_user_id)
+            delay = self._reconnect_delays.get(max_user_id, _RECONNECT_DELAY)
+            log.warning(
+                "Pool client %s disconnected — reconnecting in %.0fs...",
+                max_user_id, delay,
+            )
 
             # Close old client gracefully
             old = self._clients.get(max_user_id)
@@ -104,15 +111,21 @@ class MaxClientPool:
                 except Exception:
                     pass
 
-            await asyncio.sleep(_RECONNECT_DELAY)
+            await asyncio.sleep(delay)
 
             try:
                 client = BridgeMaxClient(token=token, device_id=device_id)
                 await client.connect_and_login()
                 self._clients[max_user_id] = client
+                # Reset backoff on success
+                self._reconnect_delays[max_user_id] = _RECONNECT_DELAY
                 log.info("Pool client %s reconnected successfully", max_user_id)
                 return client
             except Exception as e:
+                # Exponential backoff: double the delay up to the cap
+                self._reconnect_delays[max_user_id] = min(
+                    delay * 2, _RECONNECT_MAX_DELAY
+                )
                 log.error("Pool client %s reconnect failed: %s", max_user_id, e)
                 return None
 

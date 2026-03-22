@@ -252,12 +252,22 @@ class NativeMaxAuth:
         payload = None
         if payload_bytes:
             if comp_flag != 0:
+                # MAX protocol prepends 4 big-endian bytes with the uncompressed
+                # size before the LZ4 block. Use that hint (fallback: 8 MB).
+                _hint = int.from_bytes(payload_bytes[0:4], "big")
+                _max_buf = 8 * 1024 * 1024
+                _usize = _hint if 0 < _hint <= _max_buf else _max_buf
                 try:
                     payload_bytes = lz4.block.decompress(
-                        payload_bytes, uncompressed_size=99999
+                        payload_bytes[4:], uncompressed_size=_usize
                     )
                 except lz4.block.LZ4BlockError:
-                    return None
+                    try:
+                        payload_bytes = lz4.block.decompress(
+                            payload_bytes, uncompressed_size=_max_buf
+                        )
+                    except lz4.block.LZ4BlockError:
+                        return None
             payload = msgpack.unpackb(payload_bytes, raw=False,
                                       strict_map_key=False)
 
