@@ -2,34 +2,54 @@
 
 ## Prerequisites
 
-- Bridge is running (`./bridge.sh start` or equivalent)
-- E2E TG session is authenticated (`python -m tests.e2e.auth_e2e`)
-- `tests/e2e/e2e_config.yaml` exists with valid credentials
+1. Установить тестовые зависимости (один раз):
+   ```bash
+   pip install -r requirements-test.txt
+   ```
 
-## How to run
+2. Авторизовать TG-аккаунт для тестов (один раз):
+   ```bash
+   ./bridge.sh test-auth
+   ```
+
+3. Создать конфиг тестов (один раз):
+   ```bash
+   cp tests/e2e/e2e_config.example.yaml tests/e2e/e2e_config.yaml
+   # заполнить: user_name, tg_chat_id, max_chat_id
+   ```
+
+4. Запустить бридж:
+   ```bash
+   ./bridge.sh start          # локально
+   # или
+   ./bridge.sh docker up      # в Docker
+   ```
+
+## Запуск тестов
 
 ```bash
-# All E2E tests
-pytest tests/e2e/ -v
+# Все тесты
+./bridge.sh test
 
-# Single test case
-pytest tests/e2e/ -k T01
-pytest tests/e2e/ -k M13
-pytest tests/e2e/ -k E05
+# Конкретный кейс по ID
+./bridge.sh test -k T01
+./bridge.sh test -k M13
+./bridge.sh test -k E05
 
-# By direction
-pytest tests/e2e/ -k "tg_to_max"
-pytest tests/e2e/ -k "max_to_tg"
+# По направлению
+./bridge.sh test -k "tg_to_max"
+./bridge.sh test -k "max_to_tg"
 
-# By marker
-pytest tests/e2e/ -m text
-pytest tests/e2e/ -m reply
-pytest tests/e2e/ -m edit
-pytest tests/e2e/ -m delete
-pytest tests/e2e/ -m echo
-pytest tests/e2e/ -m formatting
-pytest tests/e2e/ -m edge
-pytest tests/e2e/ -m media
+# По маркеру (группе)
+./bridge.sh test -m text
+./bridge.sh test -m reply
+./bridge.sh test -m edit
+./bridge.sh test -m delete
+./bridge.sh test -m echo
+./bridge.sh test -m formatting
+./bridge.sh test -m edge
+./bridge.sh test -m media
+./bridge.sh test -m reaction
 ```
 
 ## Status legend

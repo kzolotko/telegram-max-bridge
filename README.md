@@ -159,6 +159,7 @@ pip install -r requirements.txt
 | `./bridge.sh docker logs` | Логи Docker |
 | `./bridge.sh docker status` | Статус контейнера |
 | `./bridge.sh docker build` | Пересобрать образ |
+| `./bridge.sh test-auth` | Авторизовать TG-аккаунт для E2E-тестов (один раз) |
 | `./bridge.sh test` | Запустить E2E-тесты (мост должен быть запущен) |
 | `./bridge.sh test -k T01` | Запустить конкретный тест-кейс |
 | `./bridge.sh test -m media` | Запустить группу тестов по маркеру |
@@ -321,21 +322,25 @@ src/
 ## E2E-тестирование
 
 Полный набор автоматизированных тестов через реальные аккаунты TG и MAX.
+Описание всех кейсов и их статусы — в [`tests/e2e/TEST_CASES.md`](tests/e2e/TEST_CASES.md).
 
-### Подготовка
+### Подготовка (один раз)
 
 ```bash
+# 1. Тестовые зависимости
 pip install -r requirements-test.txt
 
-# Авторизовать отдельную TG-сессию для тестов
-python -m tests.e2e.auth_e2e
+# 2. Авторизовать отдельную TG-сессию для тестов
+./bridge.sh test-auth
 
-# Создать конфиг теста
+# 3. Создать конфиг тестов
 cp tests/e2e/e2e_config.example.yaml tests/e2e/e2e_config.yaml
-nano tests/e2e/e2e_config.yaml   # заполнить user_name, tg_chat_id, max_chat_id
+nano tests/e2e/e2e_config.yaml   # заполнить: user_name, tg_chat_id, max_chat_id
 ```
 
 ### Запуск
+
+> **Важно:** бридж должен быть запущен (`./bridge.sh start` или `./bridge.sh docker up`).
 
 ```bash
 # Все тесты
@@ -343,14 +348,15 @@ nano tests/e2e/e2e_config.yaml   # заполнить user_name, tg_chat_id, max
 
 # Конкретный кейс
 ./bridge.sh test -k T01
+./bridge.sh test -k M13
 
-# Группа тестов
+# Группа тестов по маркеру
+./bridge.sh test -m text
 ./bridge.sh test -m formatting
 ./bridge.sh test -m media
 ./bridge.sh test -m reaction
+./bridge.sh test -m edge
 ```
-
-> **Важно:** мост должен быть запущен (`./bridge.sh start` или `./bridge.sh docker up`) во время прогона тестов.
 
 После прогона `tests/e2e/TEST_CASES.md` автоматически обновляется со статусами и временем последнего запуска.
 
