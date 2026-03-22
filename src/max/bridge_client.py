@@ -17,6 +17,9 @@ from pymax import SocketMaxClient
 from pymax.payloads import UserAgentPayload
 from pymax.static.enum import Opcode
 
+# Apply runtime patch for pymax LZ4 buffer-size bug (see _pymax_patch.py).
+from . import _pymax_patch as _  # noqa: F401
+
 log = logging.getLogger("bridge.max.client")
 
 # Dummy phone — required by PyMax constructor but unused for token auth.
