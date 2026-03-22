@@ -524,7 +524,6 @@ async def _do_max_auth(name: str, sessions_dir: str) -> int:
 
     print("  Using native TCP/SSL protocol (device_type=DESKTOP)")
     client = NativeMaxAuth()
-    bridge_client = None
     max_user_id: int | None = None
     login_token: str | None = None
     client_device_id = client.device_id
@@ -574,27 +573,41 @@ async def _do_max_auth(name: str, sessions_dir: str) -> int:
             )
 
         profile = account_data.get("profile", {})
-        max_user_id = _extract_max_user_id(profile, max_session)
+        max_user_id = _extract_max_user_id(account_data, max_session)
         client_device_id = client.device_id
 
-        # If sign_in didn't return user_id, use BridgeMaxClient (PyMax full _sync)
+        # If sign_in didn't return user_id, do a fresh native login to get profile.
+        # We use a new NativeMaxAuth instance (our own parser, no PyMax quirks).
         if not max_user_id:
-            log.info("sign_in profile keys: %s", list(profile.keys()))
-            log.info("Trying BridgeMaxClient login to get user_id...")
+            log.warning(
+                "sign_in response missing user_id — "
+                "top-level keys: %s | profile keys: %s | tokenAttrs.LOGIN keys: %s",
+                list(account_data.keys()),
+                list(profile.keys()),
+                list(((account_data.get("tokenAttrs") or {}).get("LOGIN") or {}).keys()),
+            )
+            log.info("Trying native login_by_token to extract user_id...")
             try:
-                # Persist token+device_id early (without user_id) for fallback login.
+                # Persist token+device_id early (without user_id) as safety fallback.
                 max_session.save(login_token, user_id=None, device_id=client_device_id)
-                bridge_client = BridgeMaxClient(
-                    token=login_token, device_id=client_device_id,
-                )
-                await bridge_client.connect_and_login()
-                if bridge_client.inner.me is not None:
-                    max_user_id = bridge_client.inner.me.id
-                    log.info("Got user_id from BridgeMaxClient: %s", max_user_id)
-                else:
-                    log.warning("BridgeMaxClient.me is None after login")
+                # Fresh instance → new device_id so MAX won't reject rapid reconnect.
+                login_native = NativeMaxAuth()
+                try:
+                    login_resp = await login_native.login_by_token(login_token)
+                    login_payload = login_resp.get("payload", {}) or {}
+                    log.warning(
+                        "login_by_token payload keys: %s", list(login_payload.keys())
+                    )
+                    max_user_id = _extract_max_user_id(login_payload, max_session)
+                    if max_user_id:
+                        log.info("Got user_id via login_by_token: %s", max_user_id)
+                finally:
+                    try:
+                        await login_native.close()
+                    except Exception:
+                        pass
             except Exception as e:
-                log.warning("BridgeMaxClient login for user_id failed: %s", e)
+                log.warning("Native login_by_token for user_id failed: %s", e)
 
         if not max_user_id:
             print("  ⚠️  MAX user ID not found automatically.")
@@ -606,31 +619,47 @@ async def _do_max_auth(name: str, sessions_dir: str) -> int:
         print(f"  ✅ MAX: authenticated (ID: {max_user_id})")
         return int(max_user_id)
     finally:
-        if bridge_client is not None:
-            try:
-                await bridge_client.disconnect()
-            except Exception:
-                pass
         try:
             await client.close()
         except Exception:
             pass
 
 
-def _extract_max_user_id(profile: dict, session: MaxSession) -> int | None:
-    """Try to extract user_id from MAX profile response."""
-    user_id = (
-        profile.get("userId")
-        or profile.get("id")
-        or profile.get("sn")
-    )
-    if user_id:
-        return int(user_id)
+def _extract_max_user_id(data: dict, max_session: MaxSession) -> int | None:
+    """Search for user_id across multiple known locations of a MAX API response.
+
+    MAX returns user_id in different places depending on the opcode and
+    server version: top-level, inside ``profile``, ``account``, ``me``,
+    or ``tokenAttrs.LOGIN``.
+    """
+    candidates: list[dict] = [data]
+    for sub_key in ("account", "profile", "user", "me"):
+        sub = data.get(sub_key)
+        if isinstance(sub, dict):
+            candidates.append(sub)
+    login_attrs = ((data.get("tokenAttrs") or {}).get("LOGIN")) or {}
+    if isinstance(login_attrs, dict):
+        candidates.append(login_attrs)
+
+    for obj in candidates:
+        for key in ("userId", "sn", "id"):
+            val = obj.get(key)
+            if val is not None:
+                try:
+                    uid = int(val)
+                    if uid > 0:
+                        return uid
+                except (ValueError, TypeError):
+                    pass
+
     # Fall back to previously stored user_id in session (if it exists)
     try:
-        return session.load_user_id()
+        stored = max_session.load_user_id()
+        if stored:
+            return stored
     except FileNotFoundError:
-        return None
+        pass
+    return None
 
 
 # ── Bridge configuration ─────────────────────────────────────────────────────
