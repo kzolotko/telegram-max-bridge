@@ -576,17 +576,17 @@ async def _do_max_auth(name: str, sessions_dir: str) -> int:
         max_user_id = _extract_max_user_id(account_data, max_session)
         client_device_id = client.device_id
 
-        # If sign_in didn't return user_id, do a fresh native login to get profile.
-        # We use a new NativeMaxAuth instance (our own parser, no PyMax quirks).
+        # MAX doesn't include userId in the sign_in (opcode 18) response —
+        # it only appears in the login (opcode 19) response.  Do a quick
+        # second login on a fresh connection to retrieve it.
         if not max_user_id:
-            log.warning(
-                "sign_in response missing user_id — "
+            log.debug(
+                "sign_in response has no userId (expected) — "
                 "top-level keys: %s | profile keys: %s | tokenAttrs.LOGIN keys: %s",
                 list(account_data.keys()),
                 list(profile.keys()),
                 list(((account_data.get("tokenAttrs") or {}).get("LOGIN") or {}).keys()),
             )
-            log.info("Trying native login_by_token to extract user_id...")
             try:
                 # Persist token+device_id early (without user_id) as safety fallback.
                 max_session.save(login_token, user_id=None, device_id=client_device_id)
@@ -595,12 +595,10 @@ async def _do_max_auth(name: str, sessions_dir: str) -> int:
                 try:
                     login_resp = await login_native.login_by_token(login_token)
                     login_payload = login_resp.get("payload", {}) or {}
-                    log.warning(
-                        "login_by_token payload keys: %s", list(login_payload.keys())
-                    )
+                    log.debug("login_by_token payload keys: %s", list(login_payload.keys()))
                     max_user_id = _extract_max_user_id(login_payload, max_session)
                     if max_user_id:
-                        log.info("Got user_id via login_by_token: %s", max_user_id)
+                        log.debug("Got user_id via login_by_token: %s", max_user_id)
                 finally:
                     try:
                         await login_native.close()
@@ -956,6 +954,16 @@ async def main():
         print(f"\n  Unknown mode: {mode}")
         print("  Usage: python -m src.setup [credentials|bridges]")
         sys.exit(1)
+
+    # Cancel any lingering background tasks (e.g. BridgeMaxClient ping/recv loops
+    # started during chat-list loading or membership verification).
+    # Without this, asyncio.run() waits for them to time out before exiting.
+    _current = asyncio.current_task()
+    _pending = {t for t in asyncio.all_tasks() if t is not _current}
+    if _pending:
+        for t in _pending:
+            t.cancel()
+        await asyncio.gather(*_pending, return_exceptions=True)
 
 
 if __name__ == "__main__":
