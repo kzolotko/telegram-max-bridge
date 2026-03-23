@@ -196,3 +196,27 @@ class ConfigLookup:
         for entry in self.config.bridges:
             seen.setdefault(entry.user.telegram_user_id, entry.user)
         return list(seen.values())
+
+    def update_max_user_id(self, old_user_id: int, new_user_id: int) -> int:
+        """Re-key all MAX routing entries from *old_user_id* to *new_user_id*.
+
+        Called at runtime when the authenticated user ID returned by the MAX
+        server differs from the value stored in config.yaml.  Returns the
+        number of entries that were updated.
+        """
+        import logging as _logging
+        _log = _logging.getLogger("bridge.config")
+
+        to_update = [
+            (k, v) for k, v in self._by_max.items() if k[1] == old_user_id
+        ]
+        for (chat_id, _), entry in to_update:
+            del self._by_max[(chat_id, old_user_id)]
+            self._by_max[(chat_id, new_user_id)] = entry
+
+        if to_update:
+            _log.warning(
+                "MAX routing: corrected user_id %d → %d (%d chat entries)",
+                old_user_id, new_user_id, len(to_update),
+            )
+        return len(to_update)

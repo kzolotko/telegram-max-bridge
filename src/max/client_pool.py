@@ -1,12 +1,14 @@
 import asyncio
 import logging
 
+from pymax.files import File as PyMaxFile
+
 from .bridge_client import BridgeMaxClient
 from ..types import AppConfig, MediaInfo, UserMapping
 from .session import MaxSession
 from .media import (
     get_upload_url, upload_photo_to_url, send_photo_message,
-    get_file_upload_url, upload_file_to_url, send_file_message,
+    send_file_message,
     send_multi_media_message,
 )
 
@@ -318,8 +320,18 @@ class MaxClientPool:
                 log.error("send_file: no live client for user %s", uid)
                 return None
             try:
-                upload_url = await get_file_upload_url(client)
-                file_info = await upload_file_to_url(upload_url, file_data, filename, content_type)
+                # Use pymax's FILE_UPLOAD (opcode 87) flow which includes the
+                # correct Content-Range headers and waits for the server
+                # callback — unlike the old path that incorrectly used the
+                # PHOTO_UPLOAD endpoint (opcode 80) and caused
+                # VIDEO_VALIDATION_FAILED for any video/binary file.
+                pymax_file = PyMaxFile(raw=file_data, url=filename)
+                attach = await client.inner._upload_file(pymax_file)
+                if attach is None or attach.file_id is None:
+                    raise RuntimeError(
+                        f"send_file: _upload_file returned no file_id for {filename!r}"
+                    )
+                file_info = {"_type": "FILE", "fileId": attach.file_id}
                 response = await send_file_message(client, chat_id, file_info, caption, reply_to)
                 return self._extract_msg_id(response)
             except Exception as e:
@@ -384,11 +396,16 @@ class MaxClientPool:
                         token = await upload_photo_to_url(upload_url, mi.data, mi.filename)
                         attaches.append({"_type": "PHOTO", "photoToken": token})
                     else:
-                        upload_url = await get_file_upload_url(client)
-                        file_info = await upload_file_to_url(
-                            upload_url, mi.data, mi.filename, mi.mime_type
-                        )
-                        attaches.append(file_info)
+                        # Use pymax's FILE_UPLOAD (opcode 87) — the proper
+                        # endpoint for binary/video/audio files.
+                        pymax_file = PyMaxFile(raw=mi.data, url=mi.filename)
+                        attach = await client.inner._upload_file(pymax_file)
+                        if attach is None or attach.file_id is None:
+                            raise RuntimeError(
+                                f"send_media_multi: _upload_file returned no "
+                                f"file_id for {mi.filename!r}"
+                            )
+                        attaches.append({"_type": "FILE", "fileId": attach.file_id})
 
                 response = await send_multi_media_message(
                     client, chat_id, attaches, caption, elements, reply_to

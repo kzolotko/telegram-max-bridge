@@ -50,6 +50,13 @@ class TelegramListener:
         # Reaction cache: (chat_id, msg_id) → last known "chosen" emoji (or None)
         # Used to detect changes and avoid sending duplicate/empty reaction syncs.
         self._reaction_cache: dict[tuple[int, int], str | None] = {}
+        # TG user IDs that belong to bridge accounts.  Any message arriving
+        # from one of these accounts is likely a mirror sent by the bridge.
+        # Used to handle a rare race condition where the TG update arrives at
+        # the listener before bridge.py finishes calling mark_tg().
+        self._bridge_tg_user_ids: frozenset[int] = frozenset(
+            entry.user.telegram_user_id for entry in config.bridges
+        )
 
     async def start(self) -> int:
         chat_ids = self.lookup.get_tg_chat_ids_for_user(self.user.telegram_user_id)
@@ -86,6 +93,27 @@ class TelegramListener:
                 log.debug("TG msg %s → has mirror marker, skipping", message.id)
                 return
 
+            # Late-check for bridge accounts: a TG update can arrive at this
+            # listener before bridge.py finishes calling mark_tg() — notably
+            # during media uploads where send_photo/send_video involves multiple
+            # internal awaits.  Yielding once lets the bridge task complete and
+            # call mark_tg() so the re-check below can suppress the echo.
+            sender_id_peek = message.from_user.id if message.from_user else None
+            if sender_id_peek in self._bridge_tg_user_ids:
+                # Give the bridge task time to call mark_tg() after send_photo/
+                # send_video completes.  Photo uploads can take several hundred
+                # milliseconds; 2 s is a comfortable upper bound even on slow
+                # connections while still suppressing the echo reliably.
+                # This delay ONLY applies to messages from bridge accounts, which
+                # in production are exclusively bridge-forwarded (echo) messages,
+                # so it has no impact on real user message latency.
+                await asyncio.sleep(2.0)
+                if self.mirrors.is_tg_mirror(message.id):
+                    log.debug("TG msg %s → mirror (late check), skipping", message.id)
+                    return
+                if msg_text.startswith(MIRROR_MARKER):
+                    return
+
             bridge_entry = self.lookup.get_primary_by_tg(message.chat.id)
             if not bridge_entry:
                 return
@@ -93,8 +121,11 @@ class TelegramListener:
             sender_name = self._get_sender_name(message)
             sender_id = message.from_user.id if message.from_user else None
 
-            reply_to = None
-            if message.reply_to_message:
+            # reply_to_message_id is always populated for reply messages.
+            # reply_to_message (full object) may be None if Pyrogram didn't
+            # fetch it, so use the ID attribute directly.
+            reply_to = message.reply_to_message_id
+            if reply_to is None and message.reply_to_message:
                 reply_to = message.reply_to_message.id
 
             # Album (media group): buffer and flush after a short delay

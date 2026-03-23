@@ -98,11 +98,13 @@ class BridgeMaxClient:
     ) -> dict[str, Any]:
         """Send a text message, optionally as a reply.
 
-        If *elements* are provided they are sent directly, bypassing PyMax's
-        own markdown parser (which would conflict with bridge-managed formatting).
+        If *elements* are provided, or *reply_to* is set, the message is sent
+        via the raw protocol path so we control the exact msgpack types.
+        PyMax's ReplyLink serialises messageId as a *string*, but the MAX
+        server requires an *integer* — using _send_message_raw avoids this.
         """
-        if elements is not None:
-            return await self._send_message_raw(chat_id, text, reply_to, elements)
+        if elements is not None or reply_to is not None:
+            return await self._send_message_raw(chat_id, text, reply_to, elements or [])
 
         msg = await self.inner.send_message(
             text=text,
@@ -124,7 +126,8 @@ class BridgeMaxClient:
         """Send message with explicit elements, bypassing PyMax markdown parsing."""
         link = None
         if reply_to:
-            link = {"type": "REPLY", "messageId": str(reply_to)}
+            # MAX protocol requires messageId as integer, not string.
+            link = {"type": "REPLY", "messageId": int(reply_to)}
 
         payload = {
             "chatId": chat_id,

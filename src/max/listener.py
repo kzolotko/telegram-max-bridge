@@ -83,6 +83,34 @@ class MaxListener:
         client.set_raw_callback(self._handle_packet)
         await client.connect_and_login()
         self.client = client
+
+        # Verify (and auto-correct) MAX user ID: the value in config.yaml may
+        # differ from the actual ID returned by the MAX server after login.
+        # If they differ, the routing table is re-keyed so messages sent by
+        # this user are forwarded via their own TG account, not the primary's.
+        try:
+            if client.inner.me:
+                actual_id = int(client.inner.me.id)
+                if actual_id and actual_id != self._my_user_id:
+                    log.warning(
+                        "MAX user ID mismatch for '%s': config=%d server=%d "
+                        "— fixing routing table automatically",
+                        self.user.name, self._my_user_id, actual_id,
+                    )
+                    updated = self.lookup.update_max_user_id(self._my_user_id, actual_id)
+                    self._my_user_id = actual_id
+                    log.info(
+                        "MAX routing corrected for '%s': now uses server ID %d (%d entries updated)",
+                        self.user.name, actual_id, updated,
+                    )
+                else:
+                    log.info(
+                        "MAX user ID verified for '%s': %d (matches config)",
+                        self.user.name, self._my_user_id,
+                    )
+        except Exception as exc:
+            log.warning("Could not verify MAX user ID for '%s': %s", self.user.name, exc)
+
         # Pre-populate name cache with members of bridged MAX chats
         await self._preload_chat_members()
 
@@ -249,6 +277,20 @@ class MaxListener:
         except Exception:
             pass
 
+    def _is_primary_for(self, chat_id: int) -> bool:
+        """Return True if this MaxListener is the primary handler for *chat_id*.
+
+        Multiple MaxListeners run simultaneously (one per configured user), but
+        only the *primary* listener — the one whose user is first in config for
+        this MAX chat — should forward events.  Secondary listeners must stay
+        silent to prevent duplicate BridgeEvents (and duplicate TG messages).
+        """
+        entry = self.lookup.get_primary_by_max(chat_id)
+        return (
+            entry is not None
+            and entry.user.telegram_user_id == self.user.telegram_user_id
+        )
+
     async def _handle_packet(self, data: dict[str, Any]):
         try:
             opcode = data.get("opcode", 0)
@@ -268,6 +310,13 @@ class MaxListener:
     async def _handle_message(self, packet: dict):
         payload = packet.get("payload", {})
         chat_id = payload.get("chatId")
+
+        # Guard: only the primary listener for this chat forwards events.
+        # Secondary listeners (other users' MaxListener instances connected to
+        # the same MAX chat) must stay silent to avoid duplicate BridgeEvents.
+        if not self._is_primary_for(chat_id):
+            return
+
         message = payload.get("message", {})
         msg_id = str(message.get("id", ""))
         # Sender ID lives in message.sender (opcode 128), NOT payload.fromUserId
@@ -480,6 +529,8 @@ class MaxListener:
         """Handle MSG_DELETE (opcode 66) and NOTIF_MSG_DELETE (opcode 142)."""
         payload = packet.get("payload", {})
         chat_id = payload.get("chatId")
+        if not self._is_primary_for(chat_id):
+            return
         message_ids = payload.get("messageIds", [])
         await self._handle_notif_delete(chat_id, message_ids)
 
@@ -496,6 +547,9 @@ class MaxListener:
         chat_id = payload.get("chatId")
         message_id = str(payload.get("messageId", ""))
         if not chat_id or not message_id:
+            return
+
+        if not self._is_primary_for(chat_id):
             return
 
         bridge_entry = self.lookup.get_primary_by_max(chat_id)

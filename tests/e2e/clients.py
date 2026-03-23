@@ -27,12 +27,12 @@ from pyrogram.handlers import (
 from pyrogram.raw.types import UpdateMessageReactions, PeerChannel, PeerChat, ReactionEmoji
 from pyrogram.types import Message
 
+from pymax.files import File as PyMaxFile
+
 from src.max.bridge_client import BridgeMaxClient
 from src.max.media import (
     get_upload_url,
     upload_photo_to_url,
-    get_file_upload_url,
-    upload_file_to_url,
     send_photo_message,
     send_file_message,
     send_multi_media_message,
@@ -70,7 +70,14 @@ class ReceivedEvent:
         if isinstance(self.raw, dict):
             link = self.raw.get("link", {})
             if link and link.get("type") == "REPLY":
+                # MAX can return the ID in two places:
+                #   link.messageId  — what we send in the request
+                #   link.message.id — what MAX echoes back in the notification
                 msg_id = link.get("messageId")
+                if not msg_id:
+                    link_msg = link.get("message")
+                    if isinstance(link_msg, dict):
+                        msg_id = link_msg.get("id")
                 if msg_id:
                     return str(msg_id)
         return None
@@ -356,6 +363,30 @@ class MaxTestClient:
             user_id = self._client.inner.me.id
         log.info("MAX test client started: user_id=%s → chat %s", user_id, self.chat_id)
 
+    async def _ensure_connected(self) -> None:
+        """Reconnect if the native MAX socket is no longer alive.
+
+        MAX may close the connection after certain error responses (e.g. an
+        invalid video file triggers an SSL-level disconnect).  Subsequent
+        invoke_method calls would raise SocketNotConnectedError — this method
+        detects that and re-establishes the connection transparently.
+        """
+        if self._client is not None and self._client.is_connected:
+            return
+        log.info("MaxTestClient: connection lost — reconnecting")
+        if self._client is not None:
+            try:
+                await self._client.disconnect()
+            except Exception:
+                pass
+        fresh_device_id = str(uuid4())
+        self._client = BridgeMaxClient(
+            token=self._token, device_id=fresh_device_id,
+        )
+        self._client.set_raw_callback(self._on_packet)
+        await self._client.connect_and_login()
+        log.info("MaxTestClient: reconnected")
+
     async def stop(self) -> None:
         if self._client:
             try:
@@ -363,59 +394,85 @@ class MaxTestClient:
             except Exception:
                 pass
 
+    # ── Helpers ───────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _extract_msg_id(resp: Any) -> str | None:
+        """Safely extract message ID from a MAX response dict.
+
+        MAX sometimes returns error responses where payload["message"] is a
+        string (error description) instead of a dict — this handles that case
+        gracefully so send methods return None instead of raising AttributeError.
+        """
+        if not isinstance(resp, dict):
+            return None
+        payload = resp.get("payload", {})
+        if not isinstance(payload, dict):
+            return None
+        msg = payload.get("message", {})
+        if not isinstance(msg, dict):
+            log.warning("MaxTestClient: unexpected 'message' type in response: %r", msg)
+            return None
+        mid = msg.get("id")
+        return str(mid) if mid else None
+
     # ── Send ──────────────────────────────────────────────────────────────────
 
     async def send_text(self, text: str, reply_to: str | None = None) -> str | None:
         """Send text message, return MAX msg_id as string (or None)."""
+        await self._ensure_connected()
         resp = await self._client.send_message(
             self.chat_id, text,
             reply_to=int(reply_to) if reply_to else None,
         )
-        payload = resp.get("payload", {})
-        msg = payload.get("message", {})
-        return str(msg.get("id")) if msg.get("id") else None
+        return self._extract_msg_id(resp)
 
     async def send_text_with_elements(
         self, text: str, elements: list[dict], reply_to: str | None = None,
     ) -> str | None:
         """Send text with explicit formatting elements (for formatting tests)."""
+        await self._ensure_connected()
         resp = await self._client.send_message(
             self.chat_id, text,
             reply_to=int(reply_to) if reply_to else None,
             elements=elements,
         )
-        payload = resp.get("payload", {})
-        msg = payload.get("message", {})
-        return str(msg.get("id")) if msg.get("id") else None
+        return self._extract_msg_id(resp)
 
     async def edit_message(self, msg_id: str, new_text: str) -> None:
+        await self._ensure_connected()
         await self._client.edit_message(self.chat_id, int(msg_id), new_text)
 
     async def delete_messages(self, msg_ids: list[str]) -> None:
+        await self._ensure_connected()
         await self._client.delete_message(self.chat_id, [int(m) for m in msg_ids])
 
     async def send_photo(
         self, data: bytes, filename: str = "photo.jpg", caption: str = "",
     ) -> str | None:
         """Upload a photo and send it. Returns MAX msg_id."""
+        await self._ensure_connected()
         upload_url = await get_upload_url(self._client)
         token = await upload_photo_to_url(upload_url, data, filename)
         resp = await send_photo_message(self._client, self.chat_id, token, caption)
-        payload = resp.get("payload", {})
-        msg = payload.get("message", {})
-        return str(msg.get("id")) if msg.get("id") else None
+        return self._extract_msg_id(resp)
 
     async def send_file(
         self, data: bytes, filename: str, content_type: str = "application/octet-stream",
         caption: str = "",
     ) -> str | None:
         """Upload a file/video and send it. Returns MAX msg_id."""
-        upload_url = await get_file_upload_url(self._client)
-        file_info = await upload_file_to_url(upload_url, data, filename, content_type)
+        await self._ensure_connected()
+        # Use pymax's FILE_UPLOAD (opcode 87) with Content-Range headers and
+        # server-push callback — the photo-upload endpoint (opcode 80) rejects
+        # video files with VIDEO_VALIDATION_FAILED.
+        pymax_file = PyMaxFile(raw=data, url=filename)
+        attach = await self._client.inner._upload_file(pymax_file)
+        if attach is None or attach.file_id is None:
+            raise RuntimeError(f"send_file: _upload_file returned no file_id for {filename!r}")
+        file_info = {"_type": "FILE", "fileId": attach.file_id}
         resp = await send_file_message(self._client, self.chat_id, file_info, caption)
-        payload = resp.get("payload", {})
-        msg = payload.get("message", {})
-        return str(msg.get("id")) if msg.get("id") else None
+        return self._extract_msg_id(resp)
 
     async def send_media_multi(
         self, items: list[tuple[bytes, str, str]], caption: str = "",
@@ -425,6 +482,7 @@ class MaxTestClient:
         *items*: list of (data, filename, mime_type) tuples.
         Returns MAX msg_id.
         """
+        await self._ensure_connected()
         attaches: list[dict] = []
         for data, fname, mime in items:
             if mime.startswith("image/"):
@@ -432,20 +490,24 @@ class MaxTestClient:
                 token = await upload_photo_to_url(url, data, fname)
                 attaches.append({"_type": "PHOTO", "photoToken": token})
             else:
-                url = await get_file_upload_url(self._client)
-                file_info = await upload_file_to_url(url, data, fname, mime)
-                attaches.append(file_info)
+                pymax_file = PyMaxFile(raw=data, url=fname)
+                attach = await self._client.inner._upload_file(pymax_file)
+                if attach is None or attach.file_id is None:
+                    raise RuntimeError(
+                        f"send_media_multi: _upload_file returned no file_id for {fname!r}"
+                    )
+                attaches.append({"_type": "FILE", "fileId": attach.file_id})
         resp = await send_multi_media_message(
             self._client, self.chat_id, attaches, caption,
         )
-        payload = resp.get("payload", {})
-        msg = payload.get("message", {})
-        return str(msg.get("id")) if msg.get("id") else None
+        return self._extract_msg_id(resp)
 
     async def add_reaction(self, msg_id: str, emoji: str) -> None:
+        await self._ensure_connected()
         await self._client.add_reaction(self.chat_id, msg_id, emoji)
 
     async def remove_reaction(self, msg_id: str) -> None:
+        await self._ensure_connected()
         await self._client.remove_reaction(self.chat_id, msg_id)
 
     # ── Receive ───────────────────────────────────────────────────────────────

@@ -215,8 +215,9 @@ class Bridge:
             text, fmt = prepend_sender_name_fmt(
                 event.sender_display_name, event.text or "", fmt,
             )
-            log.debug("max→tg (primary=%s) type=%s text=%r",
-                      entry.user.name, event.event_type, text[:50])
+            log.info("max→tg via primary=%s (max_sender_id=%s not matched in config) "
+                     "type=%s text=%r",
+                     entry.user.name, event.sender_user_id, event.event_type, text[:50])
 
         if not client:
             log.warning("No TG client for event, dropping")
