@@ -17,7 +17,13 @@ RECONNECT_MAX_DELAY = 60
 
 
 class MaxListener:
-    """Listens for messages in MAX using a user account via native TCP/SSL."""
+    """Listens for messages in MAX using a user account via native TCP/SSL.
+
+    Incoming packets from pymax are placed into an internal asyncio.Queue
+    by the recv callback.  A separate worker task processes them, which
+    allows handler code to call ``_send_and_wait`` (e.g. ``get_file_by_id``,
+    ``get_users``) without deadlocking the recv loop.
+    """
 
     def __init__(
         self,
@@ -38,12 +44,11 @@ class MaxListener:
         self._device_id: str | None = None
         self._stopped = False
         self._monitor_task: asyncio.Task | None = None
+        self._worker_task: asyncio.Task | None = None
+        self._packet_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self._name_cache: dict[int, str] = {}  # max_user_id -> display name
 
         # Pre-populate name cache with known bridge users.
-        # For these users the bridge routes via their own TG account,
-        # so the display name is rarely shown — but having it cached
-        # avoids any network call and eliminates the delay entirely.
         for entry in config.bridges:
             u = entry.user
             self._name_cache[u.max_user_id] = u.name
@@ -65,6 +70,7 @@ class MaxListener:
             )
         await self._connect()
 
+        self._worker_task = asyncio.create_task(self._worker())
         self._monitor_task = asyncio.create_task(self._reconnect_loop())
 
         log.info("Started for %s (User ID: %d)", self.user.name, self._my_user_id)
@@ -80,14 +86,11 @@ class MaxListener:
             self.client = None
 
         client = BridgeMaxClient(token=self._login_token, device_id=self._device_id)
-        client.set_raw_callback(self._handle_packet)
+        client.set_raw_callback(self._enqueue_packet)
         await client.connect_and_login()
         self.client = client
 
-        # Verify (and auto-correct) MAX user ID: the value in config.yaml may
-        # differ from the actual ID returned by the MAX server after login.
-        # If they differ, the routing table is re-keyed so messages sent by
-        # this user are forwarded via their own TG account, not the primary's.
+        # Verify (and auto-correct) MAX user ID
         try:
             if client.inner.me:
                 actual_id = int(client.inner.me.id)
@@ -147,19 +150,51 @@ class MaxListener:
                 await self._monitor_task
             except asyncio.CancelledError:
                 pass
+        if self._worker_task:
+            self._worker_task.cancel()
+            try:
+                await self._worker_task
+            except asyncio.CancelledError:
+                pass
         if self.client:
             try:
                 await self.client.disconnect()
             except Exception:
                 pass
 
-    async def _preload_chat_members(self):
-        """Pre-load names of all members in bridged MAX chats into _name_cache.
+    # ── Packet queue ──────────────────────────────────────────────────────────
 
-        Called after connect — uses load_members() which goes through
-        _send_and_wait (safe here because recv_loop handlers aren't active yet
-        for message processing, and _send_and_wait uses seq-based futures).
-        """
+    async def _enqueue_packet(self, data: dict[str, Any]):
+        """Recv callback — just put the packet into the queue (instant, no I/O)."""
+        self._packet_queue.put_nowait(data)
+
+    async def _worker(self):
+        """Process packets from the queue.  Runs outside the recv loop, so
+        ``_send_and_wait`` calls (get_file_by_id, get_users, etc.) are safe."""
+        while True:
+            try:
+                data = await self._packet_queue.get()
+            except asyncio.CancelledError:
+                return
+            try:
+                await self._process_packet(data)
+            except Exception as e:
+                log.error("Error processing packet (opcode=%s): %s",
+                          data.get("opcode"), e, exc_info=True)
+
+    async def _process_packet(self, data: dict[str, Any]):
+        opcode = data.get("opcode", 0)
+        if opcode == 128:  # NOTIF_MESSAGE (new, edit, delete — via status field)
+            await self._handle_message(data)
+        elif opcode in (66, 142):  # MSG_DELETE / NOTIF_MSG_DELETE
+            await self._handle_deleted_message(data)
+        elif opcode == 155:  # NOTIF_MSG_REACTIONS_CHANGED
+            await self._handle_reaction(data)
+
+    # ── Name resolution ───────────────────────────────────────────────────────
+
+    async def _preload_chat_members(self):
+        """Pre-load names of all members in bridged MAX chats into _name_cache."""
         max_chat_ids = set()
         for entry in self.config.bridges:
             max_chat_ids.add(entry.max_chat_id)
@@ -178,30 +213,37 @@ class MaxListener:
             except Exception as e:
                 log.warning("Failed to preload members for chat %s: %s", chat_id, e)
 
-    def _resolve_sender_name(self, sender_id: int) -> str:
-        """Resolve display name for a MAX user ID — no network calls.
+    async def _resolve_sender_name(self, sender_id: int) -> str:
+        """Resolve display name for a MAX user ID.
 
-        Known bridge users are pre-populated from config.
-        Other users are looked up in PyMax's internal cache (populated
-        during _sync at login and updated as messages arrive).
-        Falls back to 'User:<id>' only if no cached data exists.
-
-        NOTE: This must be synchronous because it runs inside the PyMax
-        raw_receive handler which is awaited by _recv_loop. Calling
-        _send_and_wait (e.g. get_users) here would deadlock.
+        Checks local cache and PyMax's internal cache first.  If both miss,
+        fetches via ``get_users`` (safe because the worker runs outside the
+        recv loop).
         """
         if sender_id in self._name_cache:
             return self._name_cache[sender_id]
 
-        # Try PyMax's internal user cache (populated at login + on messages)
+        # Try PyMax's internal user cache
         name = self._try_pymax_cache(sender_id)
         if name:
             self._name_cache[sender_id] = name
             log.debug("Resolved MAX user %s → %s (from PyMax cache)", sender_id, name)
             return name
 
-        # Schedule a background fetch for future messages (runs outside handler)
-        asyncio.ensure_future(self._bg_resolve_name(sender_id))
+        # Fetch from server (no deadlock risk — worker is outside recv loop)
+        try:
+            users = await asyncio.wait_for(
+                self.client.get_users([sender_id]),
+                timeout=5.0,
+            )
+            if users:
+                name = self._extract_name(users[0])
+                if name:
+                    self._name_cache[sender_id] = name
+                    log.debug("Resolved MAX user %s → %s (network)", sender_id, name)
+                    return name
+        except Exception:
+            pass
 
         fallback = f"User:{sender_id}"
         self._name_cache[sender_id] = fallback
@@ -212,12 +254,10 @@ class MaxListener:
         if not self.client:
             return None
         try:
-            # PyMax caches users it has seen in self.inner._users
             u = self.client.inner.get_cached_user(sender_id)
             if u is not None:
                 return self._extract_name(u)
 
-            # Also check contacts loaded during _sync
             for contact in self.client.inner.contacts:
                 if contact.id == sender_id:
                     return self._extract_name(contact)
@@ -227,11 +267,6 @@ class MaxListener:
 
     @staticmethod
     def _extract_name_from_names(names) -> str | None:
-        """Pick the best display name from a list of Name objects.
-
-        Prefers first_name + last_name combination (like Telegram does),
-        falls back to .name if both are empty.
-        """
         if not names:
             return None
         for n in names:
@@ -247,7 +282,6 @@ class MaxListener:
 
     @staticmethod
     def _extract_name(u) -> str | None:
-        """Extract display name from a PyMax User/Contact object."""
         if hasattr(u, 'names') and u.names:
             name = MaxListener._extract_name_from_names(u.names)
             if name:
@@ -258,73 +292,30 @@ class MaxListener:
             return u.first_name
         return None
 
-    async def _bg_resolve_name(self, sender_id: int):
-        """Background task: fetch real name via network, update cache.
-
-        Runs as a separate task so it doesn't deadlock the recv loop.
-        The current message uses fallback; future messages get the real name.
-        """
-        try:
-            users = await asyncio.wait_for(
-                self.client.get_users([sender_id]),
-                timeout=5.0,
-            )
-            if users:
-                name = self._extract_name(users[0])
-                if name:
-                    self._name_cache[sender_id] = name
-                    log.debug("Resolved MAX user %s → %s (background)", sender_id, name)
-        except Exception:
-            pass
+    # ── Routing guard ─────────────────────────────────────────────────────────
 
     def _is_primary_for(self, chat_id: int) -> bool:
-        """Return True if this MaxListener is the primary handler for *chat_id*.
-
-        Multiple MaxListeners run simultaneously (one per configured user), but
-        only the *primary* listener — the one whose user is first in config for
-        this MAX chat — should forward events.  Secondary listeners must stay
-        silent to prevent duplicate BridgeEvents (and duplicate TG messages).
-        """
+        """Return True if this MaxListener is the primary handler for *chat_id*."""
         entry = self.lookup.get_primary_by_max(chat_id)
         return (
             entry is not None
             and entry.user.telegram_user_id == self.user.telegram_user_id
         )
 
-    async def _handle_packet(self, data: dict[str, Any]):
-        try:
-            opcode = data.get("opcode", 0)
-
-            # PyMax uses Opcode enum values (ints) for opcodes
-            if opcode == 128:  # NOTIF_MESSAGE (new, edit, delete — via status field)
-                await self._handle_message(data)
-            elif opcode == 66:  # MSG_DELETE (server echo of our own delete — has chatId+messageIds)
-                await self._handle_deleted_message(data)
-            elif opcode == 142:  # NOTIF_MSG_DELETE (other users' deletes)
-                await self._handle_deleted_message(data)
-            elif opcode == 155:  # NOTIF_MSG_REACTIONS_CHANGED
-                await self._handle_reaction(data)
-        except Exception as e:
-            log.error("Error handling packet (opcode=%s): %s", data.get("opcode"), e, exc_info=True)
+    # ── Message handlers ──────────────────────────────────────────────────────
 
     async def _handle_message(self, packet: dict):
         payload = packet.get("payload", {})
         chat_id = payload.get("chatId")
 
-        # Guard: only the primary listener for this chat forwards events.
-        # Secondary listeners (other users' MaxListener instances connected to
-        # the same MAX chat) must stay silent to avoid duplicate BridgeEvents.
         if not self._is_primary_for(chat_id):
             return
 
         message = payload.get("message", {})
         msg_id = str(message.get("id", ""))
-        # Sender ID lives in message.sender (opcode 128), NOT payload.fromUserId
         sender_id = message.get("sender") or payload.get("fromUserId")
         status = message.get("status")
 
-        # Edits and deletes from other users arrive as NOTIF_MESSAGE (opcode 128)
-        # with status="EDITED" or status="REMOVED" — route them accordingly.
         if status == "EDITED":
             await self._handle_notif_edit(chat_id, message, msg_id, sender_id)
             return
@@ -340,8 +331,6 @@ class MaxListener:
         if not chat_id or not sender_id:
             return
 
-        # MirrorTracker: skip messages sent by the bridge via ANY user's
-        # MAX account (MAX message IDs are global — same for all users).
         if msg_id and self.mirrors.is_max_mirror(msg_id):
             log.debug("MAX msg %s → is mirror, skipping", msg_id)
             return
@@ -350,7 +339,7 @@ class MaxListener:
         if not bridge_entry:
             return
 
-        sender_name = self._resolve_sender_name(sender_id)
+        sender_name = await self._resolve_sender_name(sender_id)
         text = message.get("text")
         elements = message.get("elements")
         fmt = max_elements_to_internal(elements) or None
@@ -359,7 +348,6 @@ class MaxListener:
         reply_to = None
         link = message.get("link")
         if link and link.get("type") == "REPLY":
-            # Reply target ID can be in link.messageId or link.message.id
             reply_to = link.get("messageId")
             if not reply_to:
                 link_msg = link.get("message")
@@ -367,9 +355,8 @@ class MaxListener:
                     reply_to = link_msg.get("id")
             if reply_to:
                 reply_to = str(reply_to)
-                log.debug("MAX reply_to: %s", reply_to)
 
-        # ── Handle sticker (always single, return immediately) ──────────────
+        # ── Handle sticker ────────────────────────────────────────────────
         for att in attaches:
             if att.get("_type") == "STICKER":
                 await self.on_event(BridgeEvent(
@@ -384,56 +371,16 @@ class MaxListener:
                 ))
                 return
 
-        # ── Download ALL media attachments ───────────────────────────────────
-        _ATT_META = {
-            "PHOTO": ("photo", "photo.jpg",  "image/jpeg"),
-            "VIDEO": ("video", "video.mp4",  "video/mp4"),
-            "FILE":  ("file",  "file",        "application/octet-stream"),
-            "AUDIO": ("audio", "audio.mp3",  "audio/mpeg"),
-        }
+        # ── Download media attachments ────────────────────────────────────
+        downloaded, failed_labels = await self._download_attaches(
+            attaches, chat_id, msg_id,
+        )
 
-        downloaded: list[tuple[str, MediaInfo]] = []  # (evt_type, media)
-        deferred: list[tuple[str, str, str, int]] = []  # (evt_type, fname, mime, fileId)
-        failed_labels: list[str] = []
-
-        for att in attaches:
-            att_type = att.get("_type", "")
-            if att_type not in _ATT_META:
-                continue
-
-            media_url = att.get("url") or att.get("baseUrl")
-            default_evt, default_fname, default_mime = _ATT_META[att_type]
-            fname = att.get("fileName") or att.get("name") or default_fname
-            mime  = att.get("mimeType") or default_mime
-
-            if media_url:
-                try:
-                    data = await download_media(media_url)
-                    downloaded.append((default_evt, MediaInfo(data=data, filename=fname, mime_type=mime)))
-                except Exception as e:
-                    log.error("Failed to download %s from %s: %s", att_type, media_url, e, exc_info=True)
-                    failed_labels.append(att_type.capitalize())
-            elif att.get("fileId"):
-                # No URL but has fileId — need FILE_DOWNLOAD (opcode 88) to
-                # resolve the URL.  Can't call _send_and_wait from inside the
-                # recv handler (deadlock), so defer to a background task.
-                deferred.append((default_evt, fname, mime, int(att["fileId"])))
-            else:
-                log.warning("No download URL for %s attachment (keys=%s)", att_type, list(att.keys()))
-                failed_labels.append(att_type.capitalize())
-
-        # If there are attachments needing URL resolution via opcode 88,
-        # schedule a background task (runs outside recv handler, avoids deadlock).
-        if deferred:
-            asyncio.ensure_future(self._resolve_and_emit(
-                chat_id, msg_id, deferred, downloaded, failed_labels,
-                bridge_entry, sender_name, sender_id, text, reply_to, fmt,
-            ))
-            return
-
-        # Emit download-failure events for any failed attachments
+        # Emit failure fallback
         if failed_labels:
-            fail_text = f"{text or ''}\n" + "\n".join(f"[{l} — media download failed]" for l in failed_labels)
+            fail_text = f"{text or ''}\n" + "\n".join(
+                f"[{l} — media download failed]" for l in failed_labels
+            )
             await self.on_event(BridgeEvent(
                 direction="max-to-tg",
                 bridge_entry=bridge_entry,
@@ -445,11 +392,10 @@ class MaxListener:
                 source_msg_id=msg_id,
             ))
 
+        # Emit media event(s)
         if not downloaded:
-            # Nothing else to send (text-only path follows below)
-            pass
+            pass  # text-only path below
         elif len(downloaded) == 1:
-            # Single attachment — keep original per-type event for backward compat
             evt_type, media = downloaded[0]
             await self.on_event(BridgeEvent(
                 direction="max-to-tg",
@@ -465,7 +411,6 @@ class MaxListener:
             ))
             return
         else:
-            # Multiple attachments — send as media_group
             media_list = [mi for _, mi in downloaded]
             await self.on_event(BridgeEvent(
                 direction="max-to-tg",
@@ -494,70 +439,73 @@ class MaxListener:
                 formatting=fmt,
             ))
 
-    async def _resolve_and_emit(
-        self, chat_id, msg_id, deferred, already_downloaded, failed_labels,
-        bridge_entry, sender_name, sender_id, text, reply_to, fmt,
-    ):
-        """Resolve file URLs via opcode 88 (outside recv handler) and emit event."""
-        downloaded = list(already_downloaded)
-        for evt_type, fname, mime, file_id in deferred:
-            try:
-                file_req = await self.client.inner.get_file_by_id(
-                    chat_id=chat_id,
-                    message_id=int(msg_id),
-                    file_id=file_id,
-                )
-                if file_req and file_req.url:
-                    data = await download_media(file_req.url)
-                    downloaded.append((evt_type, MediaInfo(data=data, filename=fname, mime_type=mime)))
-                    log.info("Resolved+downloaded file via opcode 88: fileId=%s", file_id)
-                else:
-                    log.warning("get_file_by_id returned no URL for fileId=%s", file_id)
-                    failed_labels.append(evt_type.capitalize())
-            except Exception as e:
-                log.warning("Failed to resolve file fileId=%s: %s", file_id, e)
-                failed_labels.append(evt_type.capitalize())
+    # ── Attachment download ───────────────────────────────────────────────────
 
-        # Emit events (same logic as the main path)
-        if failed_labels and not downloaded:
-            fail_text = f"{text or ''}\n" + "\n".join(f"[{l} — media download failed]" for l in failed_labels)
-            await self.on_event(BridgeEvent(
-                direction="max-to-tg", bridge_entry=bridge_entry,
-                sender_display_name=sender_name, sender_user_id=sender_id,
-                event_type="text", text=fail_text.strip(),
-                reply_to_source_msg_id=reply_to, source_msg_id=msg_id,
-            ))
-            return
+    _ATT_META = {
+        "PHOTO": ("photo", "photo.jpg",  "image/jpeg"),
+        "VIDEO": ("video", "video.mp4",  "video/mp4"),
+        "FILE":  ("file",  "file",        "application/octet-stream"),
+        "AUDIO": ("audio", "audio.mp3",  "audio/mpeg"),
+    }
 
-        if len(downloaded) == 1:
-            evt_type, media = downloaded[0]
-            await self.on_event(BridgeEvent(
-                direction="max-to-tg", bridge_entry=bridge_entry,
-                sender_display_name=sender_name, sender_user_id=sender_id,
-                event_type=evt_type, text=text, media=media,
-                reply_to_source_msg_id=reply_to, source_msg_id=msg_id,
-                formatting=fmt,
-            ))
-        elif len(downloaded) > 1:
-            media_list = [mi for _, mi in downloaded]
-            await self.on_event(BridgeEvent(
-                direction="max-to-tg", bridge_entry=bridge_entry,
-                sender_display_name=sender_name, sender_user_id=sender_id,
-                event_type="media_group", text=text, media_list=media_list,
-                reply_to_source_msg_id=reply_to, source_msg_id=msg_id,
-                formatting=fmt,
-            ))
-        elif text:
-            await self.on_event(BridgeEvent(
-                direction="max-to-tg", bridge_entry=bridge_entry,
-                sender_display_name=sender_name, sender_user_id=sender_id,
-                event_type="text", text=text,
-                reply_to_source_msg_id=reply_to, source_msg_id=msg_id,
-                formatting=fmt,
-            ))
+    async def _download_attaches(
+        self, attaches: list[dict], chat_id: int, msg_id: str,
+    ) -> tuple[list[tuple[str, MediaInfo]], list[str]]:
+        """Download all media attachments, resolving file URLs if needed.
+
+        Returns (downloaded, failed_labels).  Safe to call ``get_file_by_id``
+        here because the worker runs outside the pymax recv loop.
+        """
+        downloaded: list[tuple[str, MediaInfo]] = []
+        failed_labels: list[str] = []
+
+        for att in attaches:
+            att_type = att.get("_type", "")
+            if att_type not in self._ATT_META:
+                continue
+
+            media_url = att.get("url") or att.get("baseUrl")
+            default_evt, default_fname, default_mime = self._ATT_META[att_type]
+            fname = att.get("fileName") or att.get("name") or default_fname
+            mime = att.get("mimeType") or default_mime
+
+            # FILE attachments uploaded via opcode 87 may lack a direct URL.
+            # Resolve via FILE_DOWNLOAD (opcode 88) — safe here (worker context).
+            if not media_url and att.get("fileId") and self.client:
+                try:
+                    file_req = await self.client.inner.get_file_by_id(
+                        chat_id=chat_id,
+                        message_id=int(msg_id),
+                        file_id=int(att["fileId"]),
+                    )
+                    if file_req and file_req.url:
+                        media_url = file_req.url
+                        log.info("Resolved file URL via opcode 88: fileId=%s", att["fileId"])
+                except Exception as e:
+                    log.warning("Failed to resolve file URL for fileId=%s: %s",
+                                att.get("fileId"), e)
+
+            if media_url:
+                try:
+                    data = await download_media(media_url)
+                    downloaded.append((
+                        default_evt,
+                        MediaInfo(data=data, filename=fname, mime_type=mime),
+                    ))
+                except Exception as e:
+                    log.error("Failed to download %s from %s: %s",
+                              att_type, media_url, e, exc_info=True)
+                    failed_labels.append(att_type.capitalize())
+            else:
+                log.warning("No download URL for %s attachment (keys=%s)",
+                            att_type, list(att.keys()))
+                failed_labels.append(att_type.capitalize())
+
+        return downloaded, failed_labels
+
+    # ── Edit / delete / reaction handlers ─────────────────────────────────────
 
     async def _handle_notif_edit(self, chat_id, message: dict, msg_id: str, sender_id):
-        """Handle edit notification from NOTIF_MESSAGE (opcode 128, status=EDITED)."""
         if not chat_id or not msg_id:
             return
         if self.mirrors.is_max_mirror(msg_id):
@@ -565,7 +513,7 @@ class MaxListener:
         bridge_entry = self.lookup.get_primary_by_max(chat_id)
         if not bridge_entry:
             return
-        sender_name = self._resolve_sender_name(sender_id) if sender_id else "Unknown"
+        sender_name = await self._resolve_sender_name(sender_id) if sender_id else "Unknown"
         text = message.get("text")
         elements = message.get("elements")
         fmt = max_elements_to_internal(elements) or None
@@ -583,7 +531,6 @@ class MaxListener:
         ))
 
     async def _handle_notif_delete(self, chat_id, message_ids: list):
-        """Handle delete notification (opcode 142 or NOTIF_MESSAGE status=REMOVED)."""
         if not chat_id or not message_ids:
             return
         bridge_entry = self.lookup.get_primary_by_max(chat_id)
@@ -603,7 +550,6 @@ class MaxListener:
             ))
 
     async def _handle_deleted_message(self, packet: dict):
-        """Handle MSG_DELETE (opcode 66) and NOTIF_MSG_DELETE (opcode 142)."""
         payload = packet.get("payload", {})
         chat_id = payload.get("chatId")
         if not self._is_primary_for(chat_id):
@@ -612,14 +558,7 @@ class MaxListener:
         await self._handle_notif_delete(chat_id, message_ids)
 
     async def _handle_reaction(self, packet: dict):
-        """Handle NOTIF_MSG_REACTIONS_CHANGED (opcode 155).
-
-        Payload contains:
-          chatId, messageId, totalCount, yourReaction (str|null), counters[].
-        ``yourReaction`` is the reaction OUR account currently has on the
-        message — syncing it to TG is correct because this listener runs under
-        a single user account.
-        """
+        """Handle NOTIF_MSG_REACTIONS_CHANGED (opcode 155)."""
         payload = packet.get("payload", {})
         chat_id = payload.get("chatId")
         message_id = str(payload.get("messageId", ""))
@@ -633,7 +572,6 @@ class MaxListener:
         if not bridge_entry:
             return
 
-        # Echo suppression — we set this reaction ourselves via the bridge
         our_emoji: str | None = payload.get("yourReaction") or None
         if self.mirrors.is_max_reaction_mirror(message_id, our_emoji):
             return
@@ -646,5 +584,5 @@ class MaxListener:
             sender_user_id=self._my_user_id,
             event_type="reaction",
             source_msg_id=message_id,
-            reaction_emoji=our_emoji,  # None = remove
+            reaction_emoji=our_emoji,
         ))
