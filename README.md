@@ -252,34 +252,36 @@ bridges:
 src/
 ├── main.py              # Точка входа, инициализация компонентов
 ├── config.py            # Загрузка credentials.yaml + config.yaml, ConfigLookup
-├── types.py             # Датаклассы: AppConfig, BridgeEntry, UserMapping, BridgeEvent
+├── types.py             # Датаклассы: AppConfig, BridgeEntry, UserMapping, BridgeEvent, MediaInfo
 ├── auth.py              # Интерактивная авторизация аккаунтов (по конфигу)
 ├── setup.py             # Интерактивный мастер настройки (credentials + bridges)
 ├── message_store.py     # In-memory маппинг ID сообщений (TTL 24h)
 ├── bridge/
 │   ├── bridge.py        # Роутинг событий, sender matching, отправка зеркал
 │   ├── mirror_tracker.py# Трекер ID зеркал (защита от эхо-петель)
-│   └── formatting.py    # MIRROR_MARKER, prepend_sender_name
+│   └── formatting.py    # Конвертация форматирования TG ↔ MAX, MIRROR_MARKER
 ├── telegram/
-│   ├── listener.py      # Pyrogram MTProto: слушает TG-группу
+│   ├── listener.py      # Pyrogram MTProto: слушает TG-группу, album buffering, reactions
 │   └── client_pool.py   # Пул Pyrogram-клиентов, по одному на пользователя
 └── max/
     ├── native_client.py # Нативный TCP/SSL клиент (авторизация)
-    ├── bridge_client.py # Обёртка SocketMaxClient для бриджа
-    ├── listener.py      # Слушает MAX-чат через нативный протокол
-    ├── client_pool.py   # Пул MAX-клиентов для отправки
+    ├── bridge_client.py # Обёртка SocketMaxClient для бриджа (реакции через raw opcodes)
+    ├── listener.py      # Queue-based listener: recv → asyncio.Queue → worker task
+    ├── client_pool.py   # Пул MAX-клиентов, upload с fallback (pymax → HTTP)
     ├── session.py       # Сохранение/загрузка MAX login_token + device_id
-    └── media.py         # Скачивание/загрузка медиафайлов MAX CDN
+    ├── media.py         # Upload/download медиафайлов MAX CDN
+    └── _pymax_patch.py  # Runtime monkey-patch для pymax LZ4 buffer bug
 ```
 
 ### Поток данных
 
-1. `TelegramListener` / `MaxListener` получает событие (new / edit / delete).
+1. `TelegramListener` (Pyrogram callback) / `MaxListener` (queue-based worker) получает событие (new / edit / delete / reaction).
 2. Listener находит **primary** bridge entry для этого чата через `ConfigLookup`.
 3. `Bridge.handle_event` определяет направление и пробует **sender matching** — если отправитель = настроенный пользователь, используется его аккаунт на другой стороне (без префикса).
 4. Если sender matching не найден — используется primary аккаунт с `[Имя]:` префиксом.
-5. Зеркало отправляется; ID нового сообщения сохраняется в `MessageStore` для последующих edit/delete/reply.
-6. ID зеркала регистрируется в `MirrorTracker` — при повторном получении оно будет проигнорировано.
+5. Медиа: скачивается с одной стороны, загружается на другую (pymax FILE_UPLOAD с HTTP fallback для TG→MAX; CDN URL или `get_file_by_id` opcode 88 для MAX→TG).
+6. Зеркало отправляется; ID сохраняется в `MessageStore` для reply/edit/delete.
+7. ID зеркала регистрируется в `MirrorTracker` — при повторном получении оно будет проигнорировано.
 
 ### Защита от дублей и эхо-петель
 
@@ -298,7 +300,7 @@ src/
 |---------|--------|
 | Текст | ✅ |
 | Фото | ✅ |
-| Видео | ✅ |
+| Видео / анимации | ✅ (включая TG ANIMATION → MAX FILE) |
 | Файлы/документы | ✅ |
 | Аудио | ✅ |
 | Голосовые сообщения | ✅ (передаются как аудио `.ogg`) |
@@ -306,13 +308,13 @@ src/
 | Ответы (reply) | ✅ |
 | Редактирование | ✅ |
 | Форматирование (bold, italic, underline, strikethrough) | ✅ |
-| Реакции | ✅ |
+| Реакции | ✅ (требуется supergroup для TG) |
 | Опросы TG→MAX | ✅ (форматируются как текст `📊 ...`) |
 | Опросы MAX→TG | ➖ MAX не поддерживает polls |
 | Голосовые MAX→TG | ➖ MAX не поддерживает голосовые сообщения |
 | Стикеры | ⚠️ заменяются на `[Sticker]` |
 | Удаление MAX→TG | ⚠️ работает для сообщений других пользователей (MAX не уведомляет об удалении собственных) |
-| Удаление TG→MAX | ⚠️ работает в супергруппах (Pyrogram не сообщает `chat_id` в обычных группах) |
+| Удаление TG→MAX | ✅ в супергруппах, ⚠️ в обычных группах (Pyrogram не сообщает `chat_id`) |
 | Code/pre/text_link форматирование | ⚠️ передаётся как plain text (MAX не поддерживает) |
 | Несколько пользователей | ✅ sender routing + primary listener |
 | Reply/edit/delete после перезапуска | ⚠️ теряются (in-memory store, нет персистентности) |
