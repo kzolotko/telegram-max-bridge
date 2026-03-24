@@ -151,11 +151,14 @@ async def harness(e2e_config):
 
 @pytest_asyncio.fixture(autouse=True, loop_scope="session")
 async def _drain_queues(harness):
-    """Drain stale events from both clients before each test.
+    """Drain stale events and add a brief pause between tests.
 
-    Prevents leftover messages from a previous test from leaking
-    into the next one.
+    The drain prevents leftover messages from a previous test from leaking
+    into the next one.  The pause avoids MAX rate limits on edits/deletes
+    (``errors.edit-message.send-too-many-edit``) that cause cascading
+    failures when tests run back-to-back.
     """
     harness.tg.drain()
     harness.max.drain()
+    await asyncio.sleep(1)
     yield

@@ -217,11 +217,20 @@ class BridgeMaxClient:
 
     async def add_reaction(self, chat_id: int, message_id: str, emoji: str) -> None:
         """Add an emoji reaction to a MAX message."""
-        await self.inner.add_reaction(chat_id=chat_id, message_id=message_id, reaction=emoji)
+        # Bypass pymax.add_reaction which serializes messageId as string —
+        # MAX server requires it as an integer (validation error otherwise).
+        await self.invoke_method(opcode=178, payload={  # MSG_REACTION
+            "chatId": chat_id,
+            "messageId": int(message_id),
+            "reaction": {"id": emoji},
+        })
 
     async def remove_reaction(self, chat_id: int, message_id: str) -> None:
         """Remove our reaction from a MAX message."""
-        await self.inner.remove_reaction(chat_id=chat_id, message_id=message_id)
+        await self.invoke_method(opcode=179, payload={  # MSG_CANCEL_REACTION
+            "chatId": chat_id,
+            "messageId": int(message_id),
+        })
 
     # ── Raw protocol access (for media.py compatibility) ───────
 
