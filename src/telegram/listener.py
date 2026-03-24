@@ -151,7 +151,7 @@ class TelegramListener:
                     source_msg_id=message.id,
                     formatting=cap_fmt or None,
                 ))
-            elif message.video:
+            elif message.video or message.animation:
                 media = await self._download_media(message)
                 cap_fmt = tg_entities_to_internal(
                     message.caption or "", message.caption_entities,
@@ -514,6 +514,9 @@ class TelegramListener:
             elif message.video:
                 filename = message.video.file_name or f"video_{message.video.file_unique_id}.mp4"
                 mime_type = message.video.mime_type or "video/mp4"
+            elif message.animation:
+                filename = message.animation.file_name or f"anim_{message.animation.file_unique_id}.mp4"
+                mime_type = message.animation.mime_type or "video/mp4"
             elif message.document:
                 filename = message.document.file_name or "document"
                 mime_type = message.document.mime_type or "application/octet-stream"

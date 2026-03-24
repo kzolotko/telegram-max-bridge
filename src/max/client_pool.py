@@ -8,6 +8,7 @@ from ..types import AppConfig, MediaInfo, UserMapping
 from .session import MaxSession
 from .media import (
     get_upload_url, upload_photo_to_url, send_photo_message,
+    get_file_upload_url, upload_file_to_url,
     send_file_message,
     send_multi_media_message,
 )
@@ -300,6 +301,37 @@ class MaxClientPool:
                     log.error("send_photo failed after %d attempts: %s", attempt + 1, e)
                     return None
 
+    async def _upload_file_with_fallback(
+        self, client: BridgeMaxClient, file_data: bytes,
+        filename: str, content_type: str,
+    ) -> dict:
+        """Upload a file to MAX, trying pymax opcode 87 first, then HTTP multipart.
+
+        Returns an attaches-ready dict like ``{"_type": "FILE", "fileId": ...}``.
+        Raises RuntimeError if both methods fail.
+
+        NOTE: Do NOT use asyncio.wait_for to cap pymax's timeout — cancelling
+        ``_upload_file`` mid-flight corrupts pymax's connection state.
+        """
+        # ── Attempt 1: pymax FILE_UPLOAD (opcode 87) ──────────────────────
+        # Let it run to completion (internal 20s timeout).  Returns None on
+        # timeout — safe, no connection corruption.
+        try:
+            pymax_file = PyMaxFile(raw=file_data, url=filename)
+            attach = await client.inner._upload_file(pymax_file)
+            if attach and attach.file_id:
+                return {"_type": "FILE", "fileId": attach.file_id}
+            log.warning("_upload_file returned no file_id for %r — trying HTTP fallback", filename)
+        except Exception as e:
+            log.warning("_upload_file failed for %r (%s) — trying HTTP fallback", filename, e)
+
+        # ── Attempt 2: HTTP multipart via opcode 80 (FILE type) ───────────
+        upload_url = await get_file_upload_url(client)
+        file_info = await upload_file_to_url(upload_url, file_data, filename, content_type)
+        if not file_info or not file_info.get("fileId"):
+            raise RuntimeError(f"Both upload methods failed for {filename!r}")
+        return file_info
+
     async def send_file(
         self,
         max_user_id: int | None,
@@ -314,34 +346,22 @@ class MaxClientPool:
         if uid is None:
             return None
 
-        for attempt in range(_MAX_RETRIES + 1):
-            client = await self._get_live_client(uid)
-            if not client:
-                log.error("send_file: no live client for user %s", uid)
-                return None
-            try:
-                # Use pymax's FILE_UPLOAD (opcode 87) flow which includes the
-                # correct Content-Range headers and waits for the server
-                # callback — unlike the old path that incorrectly used the
-                # PHOTO_UPLOAD endpoint (opcode 80) and caused
-                # VIDEO_VALIDATION_FAILED for any video/binary file.
-                pymax_file = PyMaxFile(raw=file_data, url=filename)
-                attach = await client.inner._upload_file(pymax_file)
-                if attach is None or attach.file_id is None:
-                    raise RuntimeError(
-                        f"send_file: _upload_file returned no file_id for {filename!r}"
-                    )
-                file_info = {"_type": "FILE", "fileId": attach.file_id}
-                response = await send_file_message(client, chat_id, file_info, caption, reply_to)
-                return self._extract_msg_id(response)
-            except Exception as e:
-                if attempt < _MAX_RETRIES:
-                    log.warning("send_file failed (attempt %d): %s — will reconnect and retry",
-                                attempt + 1, e)
-                    await self._reconnect(uid)
-                else:
-                    log.error("send_file failed after %d attempts: %s", attempt + 1, e)
-                    return None
+        # No retry loop — _upload_file_with_fallback already has an internal
+        # fallback (pymax → HTTP), so retrying at this level would just double
+        # the 20 s pymax timeout.
+        client = await self._get_live_client(uid)
+        if not client:
+            log.error("send_file: no live client for user %s", uid)
+            return None
+        try:
+            file_info = await self._upload_file_with_fallback(
+                client, file_data, filename, content_type,
+            )
+            response = await send_file_message(client, chat_id, file_info, caption, reply_to)
+            return self._extract_msg_id(response)
+        except Exception as e:
+            log.error("send_file failed: %s", e)
+            return None
 
     async def react(
         self,
@@ -396,16 +416,10 @@ class MaxClientPool:
                         token = await upload_photo_to_url(upload_url, mi.data, mi.filename)
                         attaches.append({"_type": "PHOTO", "photoToken": token})
                     else:
-                        # Use pymax's FILE_UPLOAD (opcode 87) — the proper
-                        # endpoint for binary/video/audio files.
-                        pymax_file = PyMaxFile(raw=mi.data, url=mi.filename)
-                        attach = await client.inner._upload_file(pymax_file)
-                        if attach is None or attach.file_id is None:
-                            raise RuntimeError(
-                                f"send_media_multi: _upload_file returned no "
-                                f"file_id for {mi.filename!r}"
-                            )
-                        attaches.append({"_type": "FILE", "fileId": attach.file_id})
+                        info = await self._upload_file_with_fallback(
+                            client, mi.data, mi.filename, mi.mime_type,
+                        )
+                        attaches.append(info)
 
                 response = await send_multi_media_message(
                     client, chat_id, attaches, caption, elements, reply_to

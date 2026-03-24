@@ -34,6 +34,8 @@ from src.max.media import (
     get_upload_url,
     upload_photo_to_url,
     send_photo_message,
+    get_file_upload_url,
+    upload_file_to_url,
     send_file_message,
     send_multi_media_message,
 )
@@ -174,7 +176,7 @@ class TgTestClient:
 
     async def send_reaction(self, msg_id: int, emoji: str | None) -> None:
         await self._client.send_reaction(
-            self.chat_id, msg_id, [emoji] if emoji else []
+            self.chat_id, msg_id, emoji or ""
         )
 
     async def delete_messages(self, msg_ids: list[int]) -> None:
@@ -457,20 +459,31 @@ class MaxTestClient:
         resp = await send_photo_message(self._client, self.chat_id, token, caption)
         return self._extract_msg_id(resp)
 
+    async def _upload_file_with_fallback(
+        self, data: bytes, filename: str, content_type: str,
+    ) -> dict:
+        """Upload file trying pymax opcode 87 first, then HTTP multipart fallback."""
+        try:
+            pymax_file = PyMaxFile(raw=data, url=filename)
+            attach = await self._client.inner._upload_file(pymax_file)
+            if attach and attach.file_id:
+                return {"_type": "FILE", "fileId": attach.file_id}
+            log.warning("MaxTestClient: _upload_file returned no file_id — trying HTTP fallback")
+        except Exception as e:
+            log.warning("MaxTestClient: _upload_file failed (%s) — trying HTTP fallback", e)
+        upload_url = await get_file_upload_url(self._client)
+        file_info = await upload_file_to_url(upload_url, data, filename, content_type)
+        if not file_info or not file_info.get("fileId"):
+            raise RuntimeError(f"Both upload methods failed for {filename!r}")
+        return file_info
+
     async def send_file(
         self, data: bytes, filename: str, content_type: str = "application/octet-stream",
         caption: str = "",
     ) -> str | None:
         """Upload a file/video and send it. Returns MAX msg_id."""
         await self._ensure_connected()
-        # Use pymax's FILE_UPLOAD (opcode 87) with Content-Range headers and
-        # server-push callback — the photo-upload endpoint (opcode 80) rejects
-        # video files with VIDEO_VALIDATION_FAILED.
-        pymax_file = PyMaxFile(raw=data, url=filename)
-        attach = await self._client.inner._upload_file(pymax_file)
-        if attach is None or attach.file_id is None:
-            raise RuntimeError(f"send_file: _upload_file returned no file_id for {filename!r}")
-        file_info = {"_type": "FILE", "fileId": attach.file_id}
+        file_info = await self._upload_file_with_fallback(data, filename, content_type)
         resp = await send_file_message(self._client, self.chat_id, file_info, caption)
         return self._extract_msg_id(resp)
 
@@ -490,13 +503,8 @@ class MaxTestClient:
                 token = await upload_photo_to_url(url, data, fname)
                 attaches.append({"_type": "PHOTO", "photoToken": token})
             else:
-                pymax_file = PyMaxFile(raw=data, url=fname)
-                attach = await self._client.inner._upload_file(pymax_file)
-                if attach is None or attach.file_id is None:
-                    raise RuntimeError(
-                        f"send_media_multi: _upload_file returned no file_id for {fname!r}"
-                    )
-                attaches.append({"_type": "FILE", "fileId": attach.file_id})
+                info = await self._upload_file_with_fallback(data, fname, mime)
+                attaches.append(info)
         resp = await send_multi_media_message(
             self._client, self.chat_id, attaches, caption,
         )

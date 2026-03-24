@@ -373,9 +373,9 @@ class Bridge:
                 if tg_msg_id:
                     emoji = event.reaction_emoji
                     self.mirrors.mark_tg_reaction(tg_msg_id, emoji)
-                    # Pyrogram send_reaction: list of emojis (empty list = remove)
+                    # Pyrogram send_reaction: emoji string (empty = remove)
                     await client.send_reaction(tg_chat_id, tg_msg_id,
-                                               [emoji] if emoji else [])
+                                               emoji or "")
 
         elif event.event_type == "delete":
             if event.delete_source_msg_id is not None:

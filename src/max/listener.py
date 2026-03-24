@@ -393,6 +393,7 @@ class MaxListener:
         }
 
         downloaded: list[tuple[str, MediaInfo]] = []  # (evt_type, media)
+        deferred: list[tuple[str, str, str, int]] = []  # (evt_type, fname, mime, fileId)
         failed_labels: list[str] = []
 
         for att in attaches:
@@ -401,9 +402,8 @@ class MaxListener:
                 continue
 
             media_url = att.get("url") or att.get("baseUrl")
-            log.debug("MAX attachment: type=%s url=%s", att_type, media_url)
             default_evt, default_fname, default_mime = _ATT_META[att_type]
-            fname = att.get("fileName") or default_fname
+            fname = att.get("fileName") or att.get("name") or default_fname
             mime  = att.get("mimeType") or default_mime
 
             if media_url:
@@ -413,8 +413,23 @@ class MaxListener:
                 except Exception as e:
                     log.error("Failed to download %s from %s: %s", att_type, media_url, e, exc_info=True)
                     failed_labels.append(att_type.capitalize())
+            elif att.get("fileId"):
+                # No URL but has fileId — need FILE_DOWNLOAD (opcode 88) to
+                # resolve the URL.  Can't call _send_and_wait from inside the
+                # recv handler (deadlock), so defer to a background task.
+                deferred.append((default_evt, fname, mime, int(att["fileId"])))
             else:
+                log.warning("No download URL for %s attachment (keys=%s)", att_type, list(att.keys()))
                 failed_labels.append(att_type.capitalize())
+
+        # If there are attachments needing URL resolution via opcode 88,
+        # schedule a background task (runs outside recv handler, avoids deadlock).
+        if deferred:
+            asyncio.ensure_future(self._resolve_and_emit(
+                chat_id, msg_id, deferred, downloaded, failed_labels,
+                bridge_entry, sender_name, sender_id, text, reply_to, fmt,
+            ))
+            return
 
         # Emit download-failure events for any failed attachments
         if failed_labels:
@@ -476,6 +491,68 @@ class MaxListener:
                 text=text,
                 reply_to_source_msg_id=reply_to,
                 source_msg_id=msg_id,
+                formatting=fmt,
+            ))
+
+    async def _resolve_and_emit(
+        self, chat_id, msg_id, deferred, already_downloaded, failed_labels,
+        bridge_entry, sender_name, sender_id, text, reply_to, fmt,
+    ):
+        """Resolve file URLs via opcode 88 (outside recv handler) and emit event."""
+        downloaded = list(already_downloaded)
+        for evt_type, fname, mime, file_id in deferred:
+            try:
+                file_req = await self.client.inner.get_file_by_id(
+                    chat_id=chat_id,
+                    message_id=int(msg_id),
+                    file_id=file_id,
+                )
+                if file_req and file_req.url:
+                    data = await download_media(file_req.url)
+                    downloaded.append((evt_type, MediaInfo(data=data, filename=fname, mime_type=mime)))
+                    log.info("Resolved+downloaded file via opcode 88: fileId=%s", file_id)
+                else:
+                    log.warning("get_file_by_id returned no URL for fileId=%s", file_id)
+                    failed_labels.append(evt_type.capitalize())
+            except Exception as e:
+                log.warning("Failed to resolve file fileId=%s: %s", file_id, e)
+                failed_labels.append(evt_type.capitalize())
+
+        # Emit events (same logic as the main path)
+        if failed_labels and not downloaded:
+            fail_text = f"{text or ''}\n" + "\n".join(f"[{l} — media download failed]" for l in failed_labels)
+            await self.on_event(BridgeEvent(
+                direction="max-to-tg", bridge_entry=bridge_entry,
+                sender_display_name=sender_name, sender_user_id=sender_id,
+                event_type="text", text=fail_text.strip(),
+                reply_to_source_msg_id=reply_to, source_msg_id=msg_id,
+            ))
+            return
+
+        if len(downloaded) == 1:
+            evt_type, media = downloaded[0]
+            await self.on_event(BridgeEvent(
+                direction="max-to-tg", bridge_entry=bridge_entry,
+                sender_display_name=sender_name, sender_user_id=sender_id,
+                event_type=evt_type, text=text, media=media,
+                reply_to_source_msg_id=reply_to, source_msg_id=msg_id,
+                formatting=fmt,
+            ))
+        elif len(downloaded) > 1:
+            media_list = [mi for _, mi in downloaded]
+            await self.on_event(BridgeEvent(
+                direction="max-to-tg", bridge_entry=bridge_entry,
+                sender_display_name=sender_name, sender_user_id=sender_id,
+                event_type="media_group", text=text, media_list=media_list,
+                reply_to_source_msg_id=reply_to, source_msg_id=msg_id,
+                formatting=fmt,
+            ))
+        elif text:
+            await self.on_event(BridgeEvent(
+                direction="max-to-tg", bridge_entry=bridge_entry,
+                sender_display_name=sender_name, sender_user_id=sender_id,
+                event_type="text", text=text,
+                reply_to_source_msg_id=reply_to, source_msg_id=msg_id,
                 formatting=fmt,
             ))
 
