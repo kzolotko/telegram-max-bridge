@@ -118,6 +118,10 @@ async def test_T13_edit(harness):
     )
 
 
+@pytest.mark.skip(reason=(
+    "MAX server does not deliver delete notifications to the same user who "
+    "deleted the message, and E2E tests use a single MAX account."
+))
 async def test_T14_delete(harness):
     """T14: TG→MAX удаление сообщения."""
     # Step 1: send TG message
