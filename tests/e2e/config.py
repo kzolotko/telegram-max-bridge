@@ -3,15 +3,27 @@ E2E test configuration loader.
 
 Reads test-specific settings from tests/e2e/e2e_config.yaml and combines
 them with existing bridge credentials and MAX session data.
+
+Supports an optional second user for two-user tests (reactions, deletes,
+sender routing).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from uuid import uuid4
 
 import yaml
+
+
+@dataclass
+class UserCreds:
+    """Credentials for one E2E test user."""
+    name: str
+    max_login_token: str
+    max_device_id: str
+    max_test_device_id: str
+    tg_e2e_session: str  # Pyrogram session name
 
 
 @dataclass
@@ -24,13 +36,13 @@ class E2EConfig:
     tg_chat_id: int
 
     # MAX
-    max_login_token: str
-    max_device_id: str  # original device_id from user's session
-    max_test_device_id: str  # separate device_id for test client
     max_chat_id: int
 
-    # User
-    user_name: str
+    # Primary user
+    primary: UserCreds
+
+    # Second user (optional — enables two-user tests)
+    secondary: UserCreds | None
 
     # Paths
     sessions_dir: str
@@ -38,18 +50,65 @@ class E2EConfig:
     # Test settings
     timeout: float
 
+    # Backwards-compat aliases
+    @property
+    def user_name(self) -> str:
+        return self.primary.name
+
+    @property
+    def max_login_token(self) -> str:
+        return self.primary.max_login_token
+
+    @property
+    def max_test_device_id(self) -> str:
+        return self.primary.max_test_device_id
+
     @property
     def tg_e2e_session(self) -> str:
-        """Pyrogram session name for E2E test client."""
-        return f"tg_e2e_{self.user_name}"
+        return self.primary.tg_e2e_session
 
 
-# Fixed UUID for the test MAX client — avoids creating a new "device" entry
-# on the MAX server every run.  Override via e2e_config.yaml if needed.
+# Fixed UUIDs for test MAX clients — avoids creating a new "device" entry
+# on the MAX server every run.
 _DEFAULT_TEST_DEVICE_ID = "e2e00000-cafe-4000-a000-000000000001"
+_DEFAULT_TEST_DEVICE_ID_2 = "e2e00000-cafe-4000-a000-000000000002"
 
 _CONFIG_PATH = Path(__file__).resolve().parent / "e2e_config.yaml"
 _EXAMPLE_PATH = Path(__file__).resolve().parent / "e2e_config.example.yaml"
+
+
+def _load_user_creds(
+    user_name: str,
+    sessions_dir: str,
+    default_device_id: str,
+    device_id_override: str | None = None,
+) -> UserCreds:
+    """Load MAX session + build TG session name for a single user."""
+    from src.max.session import MaxSession
+
+    max_session = MaxSession(f"max_{user_name}", sessions_dir)
+    if not max_session.exists():
+        raise FileNotFoundError(
+            f"MAX session for '{user_name}' not found in {sessions_dir}/.\n"
+            f"Run 'python -m src.auth' first."
+        )
+
+    max_login_token = max_session.load()
+    max_device_id = max_session.load_device_id()
+    if not max_device_id:
+        raise RuntimeError(
+            f"No device_id in MAX session for '{user_name}'. Re-authenticate."
+        )
+
+    tg_e2e_session = f"tg_e2e_{user_name}"
+
+    return UserCreds(
+        name=user_name,
+        max_login_token=max_login_token,
+        max_device_id=max_device_id,
+        max_test_device_id=device_id_override or default_device_id,
+        tg_e2e_session=tg_e2e_session,
+    )
 
 
 def load_e2e_config() -> E2EConfig:
@@ -71,48 +130,56 @@ def load_e2e_config() -> E2EConfig:
     sessions_dir = tc.get("sessions_dir", "sessions")
 
     # ── Telegram credentials ─────────────────────────────────────────────────
-    # Import from project source (tests run from repo root)
     from src.config import load_credentials
-
     creds = load_credentials()
 
-    # ── MAX session ──────────────────────────────────────────────────────────
-    from src.max.session import MaxSession
+    # ── Primary user ─────────────────────────────────────────────────────────
+    primary = _load_user_creds(
+        user_name, sessions_dir, _DEFAULT_TEST_DEVICE_ID,
+        tc.get("max_test_device_id"),
+    )
 
-    max_session = MaxSession(f"max_{user_name}", sessions_dir)
-    if not max_session.exists():
+    # Verify TG E2E session exists
+    tg_e2e_path = Path(sessions_dir) / f"{primary.tg_e2e_session}.session"
+    if not tg_e2e_path.exists():
         raise FileNotFoundError(
-            f"MAX session for '{user_name}' not found in {sessions_dir}/.\n"
-            f"Run 'python -m src.auth' first."
+            f"TG E2E session not found: {tg_e2e_path}\n"
+            f"Run './bridge.sh test-auth' to create it."
         )
 
-    max_login_token = max_session.load()
-    max_device_id = max_session.load_device_id()
-    if not max_device_id:
-        raise RuntimeError(
-            f"No device_id in MAX session for '{user_name}'. Re-authenticate."
-        )
-
-    # Test client gets its own device_id so it doesn't collide with the bridge
-    max_test_device_id = tc.get("max_test_device_id") or _DEFAULT_TEST_DEVICE_ID
-
-    # ── Verify TG E2E session exists ─────────────────────────────────────────
-    tg_e2e_session_path = Path(sessions_dir) / f"tg_e2e_{user_name}.session"
-    if not tg_e2e_session_path.exists():
-        raise FileNotFoundError(
-            f"TG E2E session not found: {tg_e2e_session_path}\n"
-            f"Run 'python -m tests.e2e.auth_e2e' to create it."
-        )
+    # ── Second user (optional) ───────────────────────────────────────────────
+    secondary: UserCreds | None = None
+    second_user_name = tc.get("second_user_name")
+    if second_user_name:
+        try:
+            secondary = _load_user_creds(
+                second_user_name, sessions_dir, _DEFAULT_TEST_DEVICE_ID_2,
+                tc.get("max_test_device_id_2"),
+            )
+            tg_e2e_path_2 = Path(sessions_dir) / f"{secondary.tg_e2e_session}.session"
+            if not tg_e2e_path_2.exists():
+                import logging
+                logging.getLogger("e2e.config").warning(
+                    "TG E2E session for '%s' not found (%s). "
+                    "Two-user tests will be skipped. "
+                    "Run './bridge.sh test-auth --user %s' to create it.",
+                    second_user_name, tg_e2e_path_2, second_user_name,
+                )
+                secondary = None
+        except Exception as exc:
+            import logging
+            logging.getLogger("e2e.config").warning(
+                "Could not load second user '%s': %s. Two-user tests will be skipped.",
+                second_user_name, exc,
+            )
 
     return E2EConfig(
         api_id=creds["api_id"],
         api_hash=creds["api_hash"],
         tg_chat_id=tg_chat_id,
-        max_login_token=max_login_token,
-        max_device_id=max_device_id,
-        max_test_device_id=max_test_device_id,
         max_chat_id=max_chat_id,
-        user_name=user_name,
+        primary=primary,
+        secondary=secondary,
         sessions_dir=sessions_dir,
         timeout=timeout,
     )

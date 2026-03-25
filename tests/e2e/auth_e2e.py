@@ -1,17 +1,19 @@
 """
-One-time authentication for the E2E test Telegram session.
+One-time authentication for E2E test Telegram sessions.
 
 Creates a separate Pyrogram session (tg_e2e_{user_name}) that the E2E
 test client uses.  This session coexists with the bridge's own session
 (tg_{user_name}) — Telegram treats them as separate "devices".
 
 Usage:
-    python -m tests.e2e.auth_e2e
+    python -m tests.e2e.auth_e2e                # primary user from e2e_config.yaml
+    python -m tests.e2e.auth_e2e --user mary    # specific user
 
-You only need to run this once.  After that, the session file is saved
-in the sessions/ directory and reused by tests automatically.
+You only need to run this once per user.  After that, the session file is
+saved in the sessions/ directory and reused by tests automatically.
 """
 
+import argparse
 import asyncio
 import sys
 from pathlib import Path
@@ -20,8 +22,11 @@ import yaml
 from pyrogram import Client
 
 
-def _load_e2e_user_name() -> str:
-    """Read user_name from e2e_config.yaml."""
+def _load_user_name(override: str | None = None) -> str:
+    """Read user_name from e2e_config.yaml or use the override."""
+    if override:
+        return override
+
     config_path = Path(__file__).resolve().parent / "e2e_config.yaml"
     if not config_path.exists():
         print(f"ERROR: {config_path} not found.")
@@ -39,6 +44,10 @@ def _load_e2e_user_name() -> str:
 
 
 async def main():
+    parser = argparse.ArgumentParser(description="Authenticate E2E TG session")
+    parser.add_argument("--user", help="User name (default: from e2e_config.yaml)")
+    args = parser.parse_args()
+
     print("=" * 60)
     print("E2E Test — Telegram Session Authentication")
     print("=" * 60)
@@ -47,7 +56,7 @@ async def main():
     from src.config import load_credentials
 
     creds = load_credentials()
-    user_name = _load_e2e_user_name()
+    user_name = _load_user_name(args.user)
     sessions_dir = "sessions"
 
     session_name = f"tg_e2e_{user_name}"
@@ -64,7 +73,7 @@ async def main():
         )
         await client.start()
         me = await client.get_me()
-        print(f"  ✅ Verified: @{me.username or me.first_name} (ID: {me.id})")
+        print(f"  Verified: @{me.username or me.first_name} (ID: {me.id})")
         await client.stop()
         print("\nSession is valid. You can run E2E tests:")
         print("  pytest tests/e2e/ -v")
@@ -87,7 +96,7 @@ async def main():
     )
     await client.start()
     me = await client.get_me()
-    print(f"\n  ✅ Authenticated: @{me.username or me.first_name} (ID: {me.id})")
+    print(f"\n  Authenticated: @{me.username or me.first_name} (ID: {me.id})")
     await client.stop()
 
     print(f"\nSession saved: {session_path}")

@@ -7,6 +7,9 @@ Provides high-level methods for common test patterns:
 
 Each method injects a unique marker (UUID) into the text so the forwarded
 message can be reliably matched even if the chat has other traffic.
+
+Supports an optional second user pair (tg2/max2) for two-user tests:
+reactions, deletes, sender routing.
 """
 
 from __future__ import annotations
@@ -28,8 +31,9 @@ class E2EHarness:
         self.config = config
         self.timeout = config.timeout
 
+        # Primary user (kzolotko)
         self.tg = TgTestClient(
-            session_name=config.tg_e2e_session,
+            session_name=config.primary.tg_e2e_session,
             api_id=config.api_id,
             api_hash=config.api_hash,
             chat_id=config.tg_chat_id,
@@ -37,29 +41,69 @@ class E2EHarness:
         )
 
         self.max = MaxTestClient(
-            login_token=config.max_login_token,
-            device_id=config.max_test_device_id,
+            login_token=config.primary.max_login_token,
+            device_id=config.primary.max_test_device_id,
             chat_id=config.max_chat_id,
         )
 
+        # Second user (mary) — optional
+        self.tg2: TgTestClient | None = None
+        self.max2: MaxTestClient | None = None
+
+        if config.secondary:
+            self.tg2 = TgTestClient(
+                session_name=config.secondary.tg_e2e_session,
+                api_id=config.api_id,
+                api_hash=config.api_hash,
+                chat_id=config.tg_chat_id,
+                sessions_dir=config.sessions_dir,
+            )
+            self.max2 = MaxTestClient(
+                login_token=config.secondary.max_login_token,
+                device_id=config.secondary.max_test_device_id,
+                chat_id=config.max_chat_id,
+            )
+
+    @property
+    def has_second_user(self) -> bool:
+        """True if a second user is configured and available."""
+        return self.tg2 is not None and self.max2 is not None
+
     async def start(self) -> None:
-        """Connect both test clients. Call before running tests."""
+        """Connect all test clients. Call before running tests."""
         # Stagger connections to avoid overwhelming the MAX server
         await self.tg.start()
         await asyncio.sleep(1)
         await self.max.start()
         await asyncio.sleep(1)
 
+        if self.tg2 and self.max2:
+            await self.tg2.start()
+            await asyncio.sleep(1)
+            await self.max2.start()
+            await asyncio.sleep(1)
+
         # Drain any stale messages that arrived during connection
         self.tg.drain()
         self.max.drain()
+        if self.tg2:
+            self.tg2.drain()
+        if self.max2:
+            self.max2.drain()
 
-        log.info("E2E harness ready (timeout=%.1fs)", self.timeout)
+        log.info(
+            "E2E harness ready (timeout=%.1fs, second_user=%s)",
+            self.timeout, self.has_second_user,
+        )
 
     async def stop(self) -> None:
-        """Disconnect both test clients."""
+        """Disconnect all test clients."""
         await self.tg.stop()
         await self.max.stop()
+        if self.tg2:
+            await self.tg2.stop()
+        if self.max2:
+            await self.max2.stop()
         log.info("E2E harness stopped")
 
     # ── High-level test primitives ────────────────────────────────────────────
@@ -73,11 +117,7 @@ class E2EHarness:
         text: str,
         timeout: float | None = None,
     ) -> ReceivedEvent | None:
-        """Send *text* via TG, wait for the bridged message in MAX.
-
-        A unique marker is appended to the text for reliable matching.
-        Returns the ReceivedEvent from MAX, or None on timeout.
-        """
+        """Send *text* via TG, wait for the bridged message in MAX."""
         marker = self.make_marker()
         tagged = f"{text} [{marker}]"
         t = timeout or self.timeout
@@ -102,11 +142,7 @@ class E2EHarness:
         text: str,
         timeout: float | None = None,
     ) -> ReceivedEvent | None:
-        """Send *text* via MAX, wait for the bridged message in TG.
-
-        A unique marker is appended to the text for reliable matching.
-        Returns the ReceivedEvent from TG, or None on timeout.
-        """
+        """Send *text* via MAX, wait for the bridged message in TG."""
         marker = self.make_marker()
         tagged = f"{text} [{marker}]"
         t = timeout or self.timeout
@@ -170,10 +206,7 @@ class E2EHarness:
         max_msg_id: str,
         timeout: float | None = None,
     ) -> ReceivedEvent | None:
-        """Delete TG message(s), wait for the delete to propagate to MAX.
-
-        *max_msg_id* is the expected MAX message ID that should be deleted.
-        """
+        """Delete TG message(s), wait for the delete to propagate to MAX."""
         t = timeout or self.timeout
         log.info("TG delete→MAX: deleting TG msgs %s, expecting MAX %s", tg_msg_ids, max_msg_id)
         await self.tg.delete_messages(tg_msg_ids)

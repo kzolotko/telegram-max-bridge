@@ -3,13 +3,19 @@
 #
 # Prerequisites:
 #   1. Bridge is set up (credentials.yaml + config.yaml exist)
-#   2. E2E TG session is authenticated:
-#      python -m tests.e2e.auth_e2e
+#   2. E2E TG sessions are authenticated:
+#      ./bridge.sh test-auth              # primary user
+#      ./bridge.sh test-auth --user mary  # second user (optional)
 #   3. Bridge is RUNNING in a separate terminal:
 #      ./bridge.sh start
 
-# User name — must match a user in config.yaml
+# Primary user — must match a user in config.yaml
 user_name: kzolotko
+
+# Second user (optional) — enables two-user tests: reactions, deletes,
+# sender routing.  Must also be configured in config.yaml for the same bridge.
+# Requires a separate TG E2E session: ./bridge.sh test-auth --user mary
+# second_user_name: mary
 
 # Chat pair to test against (must match a bridge in config.yaml)
 tg_chat_id: -1001234567890

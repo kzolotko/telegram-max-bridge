@@ -69,8 +69,10 @@ class TelegramListener:
         # messages, so filters.chat() would never match and the handler
         # would never fire. We filter manually inside using _msg_chat_cache.
         self.client.add_handler(DeletedMessagesHandler(self._handle_deleted_messages))
-        # RawUpdateHandler for reactions (no high-level handler exists in Pyrogram)
-        self.client.add_handler(RawUpdateHandler(self._handle_raw_update))
+        # RawUpdateHandler for reactions — in group -1 so it runs BEFORE
+        # other handlers and independently (Pyrogram processes groups in order,
+        # calling at most one handler per group).
+        self.client.add_handler(RawUpdateHandler(self._handle_raw_update), group=-1)
 
         me = await self.client.get_me()
         log.info("Started for %s as @%s (ID: %d)", self.user.name, me.username, me.id)
@@ -366,14 +368,12 @@ class TelegramListener:
             if chat_id is None:
                 return
 
-            # Only process chats we're bridging
             bridge_entry = self.lookup.get_primary_by_tg(chat_id)
             if not bridge_entry:
                 return
 
             msg_id = update.msg_id
 
-            # Find our "chosen" reaction (chosen_order is not None → our pick)
             our_emoji: str | None = None
             for rc in update.reactions.results:
                 if rc.chosen_order is not None and isinstance(rc.reaction, ReactionEmoji):
@@ -381,29 +381,21 @@ class TelegramListener:
                     break
 
             cache_key = (chat_id, msg_id)
-            prev_emoji = self._reaction_cache.get(cache_key, "UNSET")
-            if prev_emoji == "UNSET":
-                # First update for this message in this process.
-                # Sync non-empty first reaction changes; skip empty state.
-                if self.mirrors.is_tg_reaction_mirror(msg_id, our_emoji):
-                    self._reaction_cache[cache_key] = our_emoji
-                    return
-                self._reaction_cache[cache_key] = our_emoji
-                if our_emoji is None:
-                    return
+            prev_emoji = self._reaction_cache.get(cache_key)
 
             if our_emoji == prev_emoji:
                 return  # no change
 
-            # Check echo suppression
+            # Echo suppression — skip reactions the bridge itself set
             if self.mirrors.is_tg_reaction_mirror(msg_id, our_emoji):
                 self._reaction_cache[cache_key] = our_emoji
                 return
 
-            self._reaction_cache[cache_key] = our_emoji
+            # Skip initial None → None (no reaction existed, none added)
+            if prev_emoji is None and our_emoji is None:
+                return
 
-            log.debug("TG reaction change: chat=%s msg=%s  %r → %r",
-                      chat_id, msg_id, prev_emoji, our_emoji)
+            self._reaction_cache[cache_key] = our_emoji
 
             await self.on_event(BridgeEvent(
                 direction="tg-to-max",

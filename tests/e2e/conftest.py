@@ -54,6 +54,7 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "edge: edge case tests")
     config.addinivalue_line("markers", "reaction: reaction tests")
     config.addinivalue_line("markers", "media: media/photo/video/album tests")
+    config.addinivalue_line("markers", "twouser: tests requiring second user")
 
 
 def pytest_runtest_logreport(report):
@@ -160,5 +161,9 @@ async def _drain_queues(harness):
     """
     harness.tg.drain()
     harness.max.drain()
+    if harness.tg2:
+        harness.tg2.drain()
+    if harness.max2:
+        harness.max2.drain()
     await asyncio.sleep(1)
     yield
