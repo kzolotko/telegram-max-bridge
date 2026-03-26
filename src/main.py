@@ -53,20 +53,31 @@ async def main():
 
     bridge = Bridge(lookup, message_store, tg_pool, max_pool, mirror_tracker)
 
-    # Warm up Pyrogram peer cache by loading dialogs — ensures all chats
-    # the user participates in are resolvable for MAX→TG sends.
-    log.info("Loading Telegram dialogs (peer cache warm-up)...")
-    warmed_users: set[int] = set()
-    for user in users:
-        if user.telegram_user_id in warmed_users:
+    # Warm up Pyrogram peer cache for configured chats only.
+    # Previously we iterated ALL dialogs (~20s); now we resolve only the
+    # chat IDs from config, falling back to full get_dialogs() if needed.
+    log.info("Warming up Telegram peer cache...")
+    chats_per_user: dict[int, set[int]] = {}
+    for entry in config.bridges:
+        chats_per_user.setdefault(entry.user.telegram_user_id, set()).add(
+            entry.telegram_chat_id
+        )
+    for tg_user_id, chat_ids in chats_per_user.items():
+        client = tg_pool.get_client(tg_user_id)
+        if not client:
             continue
-        client = tg_pool.get_client(user.telegram_user_id)
-        if client:
-            count = 0
-            async for dialog in client.get_dialogs():
-                count += 1
-            log.info("  %s: cached %d dialogs", user.name, count)
-            warmed_users.add(user.telegram_user_id)
+        failed: list[int] = []
+        for chat_id in chat_ids:
+            try:
+                await client.get_chat(chat_id)
+            except Exception:
+                failed.append(chat_id)
+        if failed:
+            log.info("  Peer cache miss for %d chat(s), loading all dialogs...", len(failed))
+            async for _ in client.get_dialogs():
+                pass
+        user_name = next(u.name for u in users if u.telegram_user_id == tg_user_id)
+        log.info("  %s: resolved %d configured chat(s)", user_name, len(chat_ids))
 
     log.info("Starting Telegram listeners...")
     tg_listeners = []

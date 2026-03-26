@@ -18,7 +18,6 @@
 | 🔴 High | Telegram-бот управления бриджем | Бот для управления через Telegram-чат. **Конфигурирование:** добавление/удаление пользователей и мостов, авторизация MAX-аккаунтов, просмотр/редактирование config.yaml. **Управление состоянием:** статус бриджа (подключения TG/MAX, аптайм), перезапуск отдельных мостов, пауза/возобновление пересылки, просмотр логов в реальном времени. Позволяет управлять бриджем на удалённом сервере без SSH |
 | 🔴 High | Бридж директ-сообщений | Опция пересылки личных (direct) сообщений между TG и MAX, а не только групповых чатов |
 | 🟡 Medium | Асимметричные пользователи | Опциональность `telegram_user_id` / `max_user_id` — пользователь только в одном мессенджере |
-| 🟡 Medium | Разобраться с кешированием диалогов | При старте бридж вызывает `get_dialogs()` для прогрева peer cache Pyrogram, но только для одного пользователя (listener). Проверить: нужно ли это для всех пользователей, можно ли убрать или оптимизировать (занимает ~20с на старте) |
 | 🟢 Low | Healthcheck endpoint | HTTP `/health` для Docker healthcheck |
 | 🟢 Low | Метрики | Счётчики переданных сообщений |
 
@@ -41,7 +40,7 @@
 | ✅ Edit MAX→TG | Opcode 128 (status=EDITED) — редактирование чужих сообщений в MAX корректно отражается в TG |
 | ✅ Имена отправителей MAX | Предзагрузка участников чатов при старте (`load_members`); async fetch через queue-based worker на cache miss |
 | ✅ `max_user_id` в setup wizard | Получение ID через `BridgeMaxClient.connect_and_login()` → `inner.me.id` |
-| ✅ Тёплый кэш Pyrogram peer | `get_dialogs()` перед `get_chat()` устраняет ошибку «Peer id invalid» |
+| ✅ Тёплый кэш Pyrogram peer | Точечный `get_chat()` только для чатов из конфига (вместо полного `get_dialogs()` ~20с). Fallback на `get_dialogs()` при cache miss |
 | ✅ Стабилизация повторного подключения MAX | Пауза 2 с между MAX-сессиями предотвращает ошибки «Connection lost» |
 | ✅ Форматирование текста | TG entities ↔ MAX elements. Bold, italic, underline, strikethrough — в обе стороны. Code/pre/text_link — TG→MAX как plain text |
 | ✅ Реакции | TG→MAX: `UpdateMessageReactions` → opcode 178 (MSG_REACTION). MAX→TG: opcode 155 → `send_reaction`. Echo-защита через `MirrorTracker` |
