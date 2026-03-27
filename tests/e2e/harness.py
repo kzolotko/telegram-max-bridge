@@ -18,7 +18,7 @@ import asyncio
 import logging
 from uuid import uuid4
 
-from .clients import TgTestClient, MaxTestClient, ReceivedEvent
+from .clients import TgTestClient, TgBotChatListener, MaxTestClient, ReceivedEvent
 from .config import E2EConfig
 
 log = logging.getLogger("e2e.harness")
@@ -45,6 +45,15 @@ class E2EHarness:
             device_id=config.primary.max_test_device_id,
             chat_id=config.max_chat_id,
         )
+
+        # DM bridge testing — optional
+        # tg_bot_chat: listener for bot's private messages (shares primary TG client)
+        # max_dm: MAX client that sends DMs AS the second user (mary) to the
+        #         bridge user (kzolotko).  Uses secondary credentials.
+        self.tg_bot_chat: TgBotChatListener | None = None
+        self.max_dm: MaxTestClient | None = None
+        self._dm_bot_id: int | None = config.dm_bot_id
+        self._dm_max_chat_id: int | None = config.dm_max_chat_id
 
         # Second user (mary) — optional
         self.tg2: TgTestClient | None = None
@@ -83,6 +92,29 @@ class E2EHarness:
             await self.max2.start()
             await asyncio.sleep(1)
 
+        # DM bridge clients (tg_bot_chat shares primary TG client after it starts)
+        if self._dm_bot_id and self._dm_max_chat_id and self.config.secondary:
+            self.tg_bot_chat = TgBotChatListener(
+                client=self.tg._client,
+                bot_user_id=self._dm_bot_id,
+            )
+            self.tg_bot_chat.start()
+
+            # max_dm connects as the SECOND user (mary) — she sends DMs to
+            # the bridge user (kzolotko), simulating an external person.
+            self.max_dm = MaxTestClient(
+                login_token=self.config.secondary.max_login_token,
+                device_id=self.config.secondary.max_test_device_id,
+                chat_id=self._dm_max_chat_id,
+            )
+            await self.max_dm.start()
+            await asyncio.sleep(1)
+        elif self._dm_bot_id and self._dm_max_chat_id and not self.config.secondary:
+            log.warning(
+                "DM bridge tests require second_user_name in e2e_config.yaml "
+                "(the second user sends DMs to the bridge user)"
+            )
+
         # Drain any stale messages that arrived during connection
         self.tg.drain()
         self.max.drain()
@@ -90,14 +122,26 @@ class E2EHarness:
             self.tg2.drain()
         if self.max2:
             self.max2.drain()
+        if self.tg_bot_chat:
+            self.tg_bot_chat.drain()
+        if self.max_dm:
+            self.max_dm.drain()
 
         log.info(
-            "E2E harness ready (timeout=%.1fs, second_user=%s)",
-            self.timeout, self.has_second_user,
+            "E2E harness ready (timeout=%.1fs, second_user=%s, dm=%s)",
+            self.timeout, self.has_second_user, self.has_dm,
         )
+
+    @property
+    def has_dm(self) -> bool:
+        """True if DM bridge testing is configured and available."""
+        return self.tg_bot_chat is not None and self.max_dm is not None
 
     async def stop(self) -> None:
         """Disconnect all test clients."""
+        if self.max_dm:
+            await self.max_dm.stop()
+        # tg_bot_chat shares the primary TG client — no stop needed
         await self.tg.stop()
         await self.max.stop()
         if self.tg2:

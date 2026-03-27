@@ -32,11 +32,13 @@ class MaxListener:
         mirror_tracker: MirrorTracker,
         on_event: Callable[[BridgeEvent], Awaitable[None]],
         user: UserMapping,
+        on_dm: Callable[..., Awaitable[None]] | None = None,
     ):
         self.config = config
         self.lookup = lookup
         self.mirrors = mirror_tracker
         self.on_event = on_event
+        self.on_dm = on_dm  # DM bridge callback (if enabled)
         self.user = user
         self.client: BridgeMaxClient | None = None
         self._my_user_id: int = user.max_user_id
@@ -47,6 +49,8 @@ class MaxListener:
         self._worker_task: asyncio.Task | None = None
         self._packet_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self._name_cache: dict[int, str] = {}  # max_user_id -> display name
+        # Set of all known group/channel chat IDs (for DM detection)
+        self._known_group_ids: set[int] = set()
 
         # Pre-populate name cache with known bridge users.
         for entry in config.bridges:
@@ -194,7 +198,18 @@ class MaxListener:
     # ── Name resolution ───────────────────────────────────────────────────────
 
     async def _preload_chat_members(self):
-        """Pre-load names of all members in bridged MAX chats into _name_cache."""
+        """Pre-load names of all members in bridged MAX chats into _name_cache.
+
+        Also builds _known_group_ids from the pymax chat/channel lists so that
+        the DM bridge can distinguish DMs from unconfigured groups.
+        """
+        # Collect all group/channel IDs visible to this account
+        if self.client:
+            for chat in self.client.inner.chats:
+                self._known_group_ids.add(chat.id)
+            for ch in self.client.inner.channels:
+                self._known_group_ids.add(ch.id)
+
         max_chat_ids = set()
         for entry in self.config.bridges:
             max_chat_ids.add(entry.max_chat_id)
@@ -309,6 +324,10 @@ class MaxListener:
         chat_id = payload.get("chatId")
 
         if not self._is_primary_for(chat_id):
+            # DM bridge path: if this chat isn't a configured bridge,
+            # check if it's a DM and forward to the DM bridge.
+            if self.on_dm and chat_id and chat_id not in self._known_group_ids:
+                await self._handle_dm_message(packet)
             return
 
         message = payload.get("message", {})
@@ -502,6 +521,105 @@ class MaxListener:
                 failed_labels.append(att_type.capitalize())
 
         return downloaded, failed_labels
+
+    # ── DM bridge handler ──────────────────────────────────────────────────────
+
+    async def _handle_dm_message(self, packet: dict):
+        """Handle a message from a DM chat — forward to DM bridge.
+
+        Supports all message types: text, media (photo/video/file/audio),
+        stickers, edits, and deletes — mirroring the group handler logic.
+        """
+        payload = packet.get("payload", {})
+        chat_id = payload.get("chatId")
+        message = payload.get("message", {})
+        msg_id = str(message.get("id", ""))
+        sender_id = message.get("sender") or payload.get("fromUserId")
+        status = message.get("status")
+
+        if not chat_id or not sender_id or not msg_id:
+            return
+
+        # Skip own messages (echo prevention)
+        if sender_id == self._my_user_id:
+            return
+
+        # Skip mirrors
+        if self.mirrors.is_max_mirror(msg_id):
+            return
+
+        if status == "EDITED":
+            text = message.get("text")
+            sender_name = await self._resolve_sender_name(sender_id)
+            elements = message.get("elements")
+            fmt = max_elements_to_internal(elements) or None
+            await self.on_dm(
+                sender_id=sender_id, sender_name=sender_name,
+                chat_id=chat_id, msg_id=msg_id, text=text,
+                event_type="edit", formatting=fmt,
+            )
+            return
+
+        if status == "REMOVED":
+            await self.on_dm(
+                sender_id=sender_id, sender_name="Unknown",
+                chat_id=chat_id, msg_id=msg_id, text=None,
+                event_type="delete",
+            )
+            return
+
+        text = message.get("text")
+        sender_name = await self._resolve_sender_name(sender_id)
+        elements = message.get("elements")
+        fmt = max_elements_to_internal(elements) or None
+        attaches = message.get("attaches", [])
+
+        log.info("MAX DM: chat=%s sender=%s (%s) msg=%s text=%r attaches=%s",
+                 chat_id, sender_id, sender_name, msg_id,
+                 (text or "")[:60],
+                 [a.get("_type") for a in attaches])
+
+        # Sticker
+        for att in attaches:
+            if att.get("_type") == "STICKER":
+                await self.on_dm(
+                    sender_id=sender_id, sender_name=sender_name,
+                    chat_id=chat_id, msg_id=msg_id,
+                    text="[Sticker]", event_type="sticker",
+                )
+                return
+
+        # Download media attachments
+        downloaded, failed_labels = await self._download_attaches(
+            attaches, chat_id, msg_id,
+        )
+
+        if failed_labels:
+            fail_text = f"{text or ''}\n" + "\n".join(
+                f"[{l} — media download failed]" for l in failed_labels
+            )
+            await self.on_dm(
+                sender_id=sender_id, sender_name=sender_name,
+                chat_id=chat_id, msg_id=msg_id,
+                text=fail_text.strip(), event_type="text",
+            )
+
+        if downloaded:
+            media_list = [(evt_type, media) for evt_type, media in downloaded]
+            await self.on_dm(
+                sender_id=sender_id, sender_name=sender_name,
+                chat_id=chat_id, msg_id=msg_id,
+                text=text, event_type="media",
+                media_list=media_list, formatting=fmt,
+            )
+            return
+
+        if text:
+            await self.on_dm(
+                sender_id=sender_id, sender_name=sender_name,
+                chat_id=chat_id, msg_id=msg_id,
+                text=text, event_type="text", formatting=fmt,
+            )
 
     # ── Edit / delete / reaction handlers ─────────────────────────────────────
 

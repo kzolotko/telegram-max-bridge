@@ -73,3 +73,16 @@ bridges:
       name: "bob"
       telegram_user_id: 333333333
       max_user_id: 205333333
+
+# ─── DM Bridge (optional) ──────────────────────────────────────────────────────
+# Forwards MAX direct messages to a Telegram bot for ALL users from bridges.
+# Reply to the bot message → the reply goes back to the MAX DM.
+#
+# SETUP:
+#   1. Create a bot via @BotFather in Telegram, copy the token.
+#   2. Each user must start a chat with the bot (send /start).
+#   3. Uncomment the section below and paste the token.
+#   No other settings needed — users are taken from the bridges section above.
+#
+# dm_bridge:
+#   bot_token: "123456789:ABCdefGHIjklMNOpqrsTUVwxyz"

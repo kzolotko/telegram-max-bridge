@@ -37,6 +37,27 @@ Telegram-группа                        MAX-чат
 
 **Поддерживается:** текст, фото, видео, файлы, аудио, голосовые, стикеры, ответы на сообщения (reply), редактирование, удаление.
 
+### DM-бридж (личные сообщения)
+
+Дополнительно к групповым чатам мост может пересылать **личные сообщения** из MAX в Telegram через бота:
+
+```
+Кто-то пишет вам в MAX DM
+      │
+      ▼
+[MAX listener обнаруживает DM]
+      │
+      ▼
+TG бот → отправляет вам: "[Имя Фамилия]: текст"
+      │
+      ▼
+Вы reply'ите боту → ответ уходит от вашего MAX-аккаунта
+```
+
+- Один бот обслуживает **всех** пользователей из `bridges`
+- Поддерживает: текст, фото, файлы, редактирование, удаление
+- Настройка: создать бота через @BotFather, добавить `dm_bridge.bot_token` в `config.yaml`
+
 ---
 
 ## Требования
@@ -85,6 +106,21 @@ pip install -r requirements.txt
 ```
 
 > После `setup` авторизация уже выполнена — дополнительно запускать `./bridge.sh auth` не нужно.
+
+### 4. DM-бридж (опционально)
+
+```bash
+# 1. Создать бота через @BotFather в Telegram, скопировать токен
+# 2. Каждый пользователь отправляет боту /start
+# 3. Добавить в config.yaml:
+```
+
+```yaml
+dm_bridge:
+  bot_token: "123456789:ABCdef..."
+```
+
+Пользователи берутся автоматически из секции `bridges` — дополнительная настройка не нужна.
 
 ---
 
@@ -256,6 +292,8 @@ src/
 ├── auth.py              # Интерактивная авторизация аккаунтов (по конфигу)
 ├── setup.py             # Интерактивный мастер настройки (credentials + bridges)
 ├── message_store.py     # In-memory маппинг ID сообщений (TTL 24h)
+├── dm_bridge.py         # DM-бридж: MAX DMs ↔ TG бот (текст, медиа, edit, delete)
+├── dm_store.py          # Маппинг bot_msg_id → MAX DM контекст (для reply routing)
 ├── bridge/
 │   ├── bridge.py        # Роутинг событий, sender matching, отправка зеркал
 │   ├── mirror_tracker.py# Трекер ID зеркал (защита от эхо-петель)
@@ -266,7 +304,7 @@ src/
 └── max/
     ├── native_client.py # Нативный TCP/SSL клиент (авторизация)
     ├── bridge_client.py # Обёртка SocketMaxClient для бриджа (реакции через raw opcodes)
-    ├── listener.py      # Queue-based listener: recv → asyncio.Queue → worker task
+    ├── listener.py      # Queue-based listener: recv → asyncio.Queue → worker task + DM detection
     ├── client_pool.py   # Пул MAX-клиентов, upload с fallback (pymax → HTTP)
     ├── session.py       # Сохранение/загрузка MAX login_token + device_id
     ├── media.py         # Upload/download медиафайлов MAX CDN
@@ -317,6 +355,7 @@ src/
 | Удаление TG→MAX | ✅ в супергруппах, ⚠️ в обычных группах (Pyrogram не сообщает `chat_id`) |
 | Code/pre/text_link форматирование | ⚠️ передаётся как plain text (MAX не поддерживает) |
 | Несколько пользователей | ✅ sender routing + primary listener |
+| DM-бридж (личные сообщения) | ✅ MAX DM → TG бот, ответ через reply (текст, фото, файлы, edit, delete) |
 | Reply/edit/delete после перезапуска | ⚠️ теряются (in-memory store, нет персистентности) |
 
 ---

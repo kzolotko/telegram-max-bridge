@@ -28,10 +28,16 @@ class BridgeEntry:
 
 
 @dataclass
+class DmBridgeConfig:
+    bot_token: str
+
+
+@dataclass
 class AppConfig:
     api_id: int  # Telegram API ID from my.telegram.org
     api_hash: str  # Telegram API hash
     bridges: list['BridgeEntry'] = field(default_factory=list)
+    dm_bridge: 'DmBridgeConfig | None' = None
     sessions_dir: str = "sessions"
 
 

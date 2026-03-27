@@ -329,6 +329,72 @@ class TgTestClient:
         ))
 
 
+# ── TG bot chat listener (for DM bridge tests) ──────────────────────────────
+
+class TgBotChatListener:
+    """Lightweight listener that captures messages from a TG bot in private chat.
+
+    Shares an already-started Pyrogram Client (from the primary TgTestClient)
+    and adds its own handler filtered to the bot's user ID.
+    """
+
+    def __init__(self, client: Client, bot_user_id: int):
+        self._client = client
+        self.bot_user_id = bot_user_id
+        self._queue: asyncio.Queue[ReceivedEvent] = asyncio.Queue()
+
+    def start(self) -> None:
+        """Register handler on the shared client (client must already be started)."""
+        bot_filter = filters.chat(self.bot_user_id) & filters.private
+        self._client.add_handler(MessageHandler(self._on_message, bot_filter))
+        log.info("TG bot chat listener started: watching bot_id=%d", self.bot_user_id)
+
+    async def send_reply(self, text: str, reply_to: int) -> Message:
+        """Send a reply in the bot's private chat."""
+        return await self._client.send_message(
+            self.bot_user_id, text,
+            reply_to_message_id=reply_to,
+        )
+
+    async def wait_for(
+        self,
+        predicate: Callable[[ReceivedEvent], bool],
+        timeout: float = 15.0,
+    ) -> ReceivedEvent | None:
+        """Wait for an event matching *predicate*. Returns None on timeout."""
+        deadline = asyncio.get_event_loop().time() + timeout
+        while True:
+            remaining = deadline - asyncio.get_event_loop().time()
+            if remaining <= 0:
+                return None
+            try:
+                evt = await asyncio.wait_for(self._queue.get(), timeout=remaining)
+                if predicate(evt):
+                    return evt
+            except asyncio.TimeoutError:
+                return None
+
+    def drain(self) -> list[ReceivedEvent]:
+        events = []
+        while not self._queue.empty():
+            try:
+                events.append(self._queue.get_nowait())
+            except asyncio.QueueEmpty:
+                break
+        return events
+
+    async def _on_message(self, _client: Client, message: Message) -> None:
+        text = message.text or message.caption or ""
+        await self._queue.put(ReceivedEvent(
+            kind="message",
+            chat_id=message.chat.id,
+            msg_id=str(message.id),
+            text=text or None,
+            sender_id=message.from_user.id if message.from_user else None,
+            raw=message,
+        ))
+
+
 # ── MAX test client ──────────────────────────────────────────────────────────
 
 class MaxTestClient:

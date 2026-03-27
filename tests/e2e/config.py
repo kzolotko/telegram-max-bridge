@@ -44,6 +44,10 @@ class E2EConfig:
     # Second user (optional — enables two-user tests)
     secondary: UserCreds | None
 
+    # DM bridge (auto-detected from config.yaml dm_bridge section)
+    dm_bot_id: int | None  # TG bot user ID (extracted from bot_token)
+    dm_max_chat_id: int | None  # MAX user ID of primary user (DM target)
+
     # Paths
     sessions_dir: str
 
@@ -173,6 +177,28 @@ def load_e2e_config() -> E2EConfig:
                 second_user_name, exc,
             )
 
+    # ── DM bridge (auto-detect from config.yaml) ────────────────────────────
+    dm_bot_id: int | None = None
+    dm_max_chat_id: int | None = None
+
+    try:
+        from src.config import load_config as _load_bridge_config
+        bridge_cfg = _load_bridge_config()
+        if bridge_cfg.dm_bridge:
+            # Bot ID = the number before ":" in the token
+            dm_bot_id = int(bridge_cfg.dm_bridge.bot_token.split(":")[0])
+            # DM target = primary user's MAX user ID (mary sends DMs to kzolotko)
+            # Find the primary user in the bridge config by matching e2e user_name
+            for entry in bridge_cfg.bridges:
+                if entry.user.name == user_name:
+                    dm_max_chat_id = entry.user.max_user_id
+                    break
+    except Exception as exc:
+        import logging
+        logging.getLogger("e2e.config").warning(
+            "Could not auto-detect DM bridge settings: %s. DM tests will be skipped.", exc,
+        )
+
     return E2EConfig(
         api_id=creds["api_id"],
         api_hash=creds["api_hash"],
@@ -180,6 +206,8 @@ def load_e2e_config() -> E2EConfig:
         max_chat_id=max_chat_id,
         primary=primary,
         secondary=secondary,
+        dm_bot_id=dm_bot_id,
+        dm_max_chat_id=dm_max_chat_id,
         sessions_dir=sessions_dir,
         timeout=timeout,
     )
