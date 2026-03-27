@@ -344,9 +344,18 @@ class TgBotChatListener:
         self._queue: asyncio.Queue[ReceivedEvent] = asyncio.Queue()
 
     def start(self) -> None:
-        """Register handler on the shared client (client must already be started)."""
-        bot_filter = filters.chat(self.bot_user_id) & filters.private
-        self._client.add_handler(MessageHandler(self._on_message, bot_filter))
+        """Register handler on the shared client (client must already be started).
+
+        Uses a separate handler group (-2) to avoid conflicts with
+        the primary TgTestClient's handlers in the default group (0).
+        Pyrogram processes handler groups in ascending order and calls
+        at most one handler per group, so group -2 fires first and
+        independently of group 0.
+        """
+        self._client.add_handler(
+            MessageHandler(self._on_message, filters.private),
+            group=-2,
+        )
         log.info("TG bot chat listener started: watching bot_id=%d", self.bot_user_id)
 
     async def send_reply(self, text: str, reply_to: int) -> Message:
@@ -384,13 +393,17 @@ class TgBotChatListener:
         return events
 
     async def _on_message(self, _client: Client, message: Message) -> None:
+        sender_id = message.from_user.id if message.from_user else None
+        # Only capture messages FROM the bot (not our own outgoing messages)
+        if sender_id != self.bot_user_id:
+            return
         text = message.text or message.caption or ""
         await self._queue.put(ReceivedEvent(
             kind="message",
             chat_id=message.chat.id,
             msg_id=str(message.id),
             text=text or None,
-            sender_id=message.from_user.id if message.from_user else None,
+            sender_id=sender_id,
             raw=message,
         ))
 

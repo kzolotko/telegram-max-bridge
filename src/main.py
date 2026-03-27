@@ -120,17 +120,13 @@ async def main():
         # If DM bridge is enabled, attach the on_dm callback to every user's listener
         on_dm = None
         if dm_bridge:
-            # Closure captures the user's max_user_id for routing
-            _max_uid = user.max_user_id
-            async def _on_dm(sender_id, sender_name, chat_id, msg_id, text,
-                             _recipient=_max_uid, **kwargs):
+            async def _on_dm(sender_id, sender_name, chat_id, msg_id, text, **kwargs):
                 await dm_bridge.handle_incoming(
                     sender_id=sender_id,
                     sender_name=sender_name,
                     chat_id=chat_id,
                     msg_id=msg_id,
                     text=text,
-                    recipient_max_user_id=_recipient,
                     **kwargs,
                 )
             on_dm = _on_dm

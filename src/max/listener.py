@@ -540,13 +540,21 @@ class MaxListener:
         if not chat_id or not sender_id or not msg_id:
             return
 
-        # Skip own messages (echo prevention)
-        if sender_id == self._my_user_id:
-            return
-
-        # Skip mirrors
+        # Echo prevention: rely on MirrorTracker.
+        # In MAX DMs, the notification arrives at the SENDER's connection,
+        # so sender_id == self._my_user_id is the normal case for outgoing DMs.
         if self.mirrors.is_max_mirror(msg_id):
             return
+
+        # Determine DM direction:
+        # - sender == self → outgoing DM (we sent it to chat_id user)
+        #   → recipient is the chat_id user, forward to their bot chat
+        # - sender != self → incoming DM (someone sent it to us)
+        #   → recipient is us (self._my_user_id), forward to our bot chat
+        if sender_id == self._my_user_id:
+            recipient_user_id = chat_id  # the other party
+        else:
+            recipient_user_id = self._my_user_id  # us
 
         if status == "EDITED":
             text = message.get("text")
@@ -557,6 +565,7 @@ class MaxListener:
                 sender_id=sender_id, sender_name=sender_name,
                 chat_id=chat_id, msg_id=msg_id, text=text,
                 event_type="edit", formatting=fmt,
+                recipient_max_user_id=recipient_user_id,
             )
             return
 
@@ -565,6 +574,7 @@ class MaxListener:
                 sender_id=sender_id, sender_name="Unknown",
                 chat_id=chat_id, msg_id=msg_id, text=None,
                 event_type="delete",
+                recipient_max_user_id=recipient_user_id,
             )
             return
 
@@ -586,6 +596,7 @@ class MaxListener:
                     sender_id=sender_id, sender_name=sender_name,
                     chat_id=chat_id, msg_id=msg_id,
                     text="[Sticker]", event_type="sticker",
+                    recipient_max_user_id=recipient_user_id,
                 )
                 return
 
@@ -602,6 +613,7 @@ class MaxListener:
                 sender_id=sender_id, sender_name=sender_name,
                 chat_id=chat_id, msg_id=msg_id,
                 text=fail_text.strip(), event_type="text",
+                recipient_max_user_id=recipient_user_id,
             )
 
         if downloaded:
@@ -611,6 +623,7 @@ class MaxListener:
                 chat_id=chat_id, msg_id=msg_id,
                 text=text, event_type="media",
                 media_list=media_list, formatting=fmt,
+                recipient_max_user_id=recipient_user_id,
             )
             return
 
@@ -619,6 +632,7 @@ class MaxListener:
                 sender_id=sender_id, sender_name=sender_name,
                 chat_id=chat_id, msg_id=msg_id,
                 text=text, event_type="text", formatting=fmt,
+                recipient_max_user_id=recipient_user_id,
             )
 
     # ── Edit / delete / reaction handlers ─────────────────────────────────────

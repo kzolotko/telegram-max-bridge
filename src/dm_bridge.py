@@ -196,7 +196,10 @@ class DmBridge:
                 return
 
             max_user_id = user.max_user_id
-            max_chat_id = ctx.max_chat_id
+            # Reply to the original sender: in MAX DMs, the "chat_id" for
+            # sending is the OTHER user's ID.  ctx.max_user_id is the sender
+            # of the original DM (the person we're replying to).
+            max_chat_id = ctx.max_user_id
 
             # Photo reply
             if message.photo:
