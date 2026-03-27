@@ -16,7 +16,7 @@
 |-----------|------|----------|
 | 🔴 High | Персистентный message store | In-memory store теряется при перезапуске — reply/edit/delete перестают работать. SQLite с TTL |
 | 🔴 High | Telegram-бот управления бриджем | Бот для управления через Telegram-чат. **Конфигурирование:** добавление/удаление пользователей и мостов, авторизация MAX-аккаунтов, просмотр/редактирование config.yaml. **Управление состоянием:** статус бриджа (подключения TG/MAX, аптайм), перезапуск отдельных мостов, пауза/возобновление пересылки, просмотр логов в реальном времени. Позволяет управлять бриджем на удалённом сервере без SSH |
-| 🔴 High | Бридж директ-сообщений | Опция пересылки личных (direct) сообщений между TG и MAX, а не только групповых чатов |
+| ~~🔴 High~~ | ~~Бридж директ-сообщений~~ | ✅ Реализован — см. dm_bridge.py |
 | 🟡 Medium | Асимметричные пользователи | Опциональность `telegram_user_id` / `max_user_id` — пользователь только в одном мессенджере |
 | 🟢 Low | Healthcheck endpoint | HTTP `/health` для Docker healthcheck |
 | 🟢 Low | Метрики | Счётчики переданных сообщений |
@@ -49,7 +49,8 @@
 | ✅ Альбомы (media groups) | TG→MAX: буферизация по `media_group_id` (0.8 с) → единое сообщение с несколькими attaches. MAX→TG: все аттачи → TG `send_media_group` |
 | ✅ Graceful reconnect | Pool-клиенты MAX автоматически переподключаются; retry отправки; MirrorTracker с LRU-eviction (10k); health-check каждые 5 мин |
 | ✅ Queue-based MAX listener | Recv callback → asyncio.Queue → worker task. Устраняет deadlock при `_send_and_wait` (get_file_by_id, get_users) из обработчиков пакетов |
-| ✅ E2E-автотесты | 58 тестов через реальные аккаунты TG и MAX. 49-53 pass, 4 skip (реакции — ограничение single-user). Статусы автообновляются в `TEST_CASES.md`. Запуск: `./bridge.sh test` |
+| ✅ E2E-автотесты | 86 тестов через реальные аккаунты TG и MAX. 71 pass, 6 skip (ограничение протокола MAX), 3 manual only. Включая DM-бридж тесты. Статусы автообновляются в `TEST_CASES.md`. Запуск: `./bridge.sh test` |
+| ✅ DM-бридж | MAX DMs → TG бот с reply-routing. Один бот на всех пользователей из bridges. Текст, фото, файлы, edit, delete. Настройка: `dm_bridge.bot_token` в config.yaml |
 
 ---
 
@@ -62,3 +63,4 @@
 | Code/pre/text_link форматирование теряется при TG→MAX | MAX поддерживает только bold/italic/underline/strikethrough |
 | Кэш `msg_id→chat_id` не переживает перезапуск | TG→MAX delete не сработает для сообщений до перезапуска |
 | MAX rate limit на edits | `errors.edit-message.send-too-many-edit` при частых редактированиях; cooldown ~5 мин |
+| DM-уведомления MAX | MAX доставляет DM-уведомления (opcode 128) только на соединение отправителя, не получателя. Echo prevention через MirrorTracker |

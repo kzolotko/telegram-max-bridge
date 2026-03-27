@@ -40,6 +40,7 @@ Examples:
   ./bridge.sh test                # run all E2E tests
   ./bridge.sh test -k T01         # run a specific test case
   ./bridge.sh test -m formatting  # run tests by marker
+  ./bridge.sh test -m dm          # run DM bridge tests
 EOF
 }
 

@@ -199,6 +199,7 @@ pip install -r requirements.txt
 | `./bridge.sh test` | Запустить E2E-тесты (мост должен быть запущен) |
 | `./bridge.sh test -k T01` | Запустить конкретный тест-кейс |
 | `./bridge.sh test -m media` | Запустить группу тестов по маркеру |
+| `./bridge.sh test -m dm` | Запустить тесты DM-бриджа |
 
 ---
 
@@ -397,6 +398,7 @@ nano tests/e2e/e2e_config.yaml   # заполнить: user_name, tg_chat_id, ma
 ./bridge.sh test -m media
 ./bridge.sh test -m reaction
 ./bridge.sh test -m edge
+./bridge.sh test -m dm
 ```
 
 После прогона `tests/e2e/TEST_CASES.md` автоматически обновляется со статусами и временем последнего запуска.
