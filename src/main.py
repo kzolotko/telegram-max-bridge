@@ -5,6 +5,7 @@ Usage: python -m src
 
 import asyncio
 import logging
+import os
 import signal
 
 from pyrogram import Client as PyrogramClient
@@ -42,7 +43,8 @@ async def main():
     lookup = ConfigLookup(config)
     users = lookup.get_unique_users()
 
-    message_store = MessageStore()
+    db_path = os.path.join(config.sessions_dir, "bridge.db")
+    message_store = MessageStore(db_path=db_path)
     message_store.start()
 
     mirror_tracker = MirrorTracker()
@@ -95,7 +97,7 @@ async def main():
     dm_bridge = None
     if config.dm_bridge:
         log.info("Initializing DM bridge bot...")
-        dm_store = DmStore()
+        dm_store = DmStore(db_path=db_path)
         dm_store.start()
 
         bot_client = PyrogramClient(
