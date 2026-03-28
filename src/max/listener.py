@@ -93,6 +93,11 @@ class MaxListener:
         await client.connect_and_login()
         self.client = client
 
+        # Let the connection stabilize before making any requests.
+        # PyMax background tasks (recv, ping, outgoing) need a moment to
+        # fully initialize after _post_login_tasks().
+        await asyncio.sleep(2)
+
         # Verify (and auto-correct) MAX user ID
         try:
             if client.inner.me:
@@ -117,7 +122,8 @@ class MaxListener:
         except Exception as exc:
             log.warning("Could not verify MAX user ID for '%s': %s", self.user.name, exc)
 
-        # Pre-populate name cache with members of bridged MAX chats
+        # Pre-populate name cache with members of bridged MAX chats.
+        # Failures are non-fatal — names will be resolved on demand.
         await self._preload_chat_members()
 
     async def _reconnect_loop(self):
@@ -201,6 +207,9 @@ class MaxListener:
 
         Also builds _known_group_ids from the pymax chat/channel lists so that
         the DM bridge can distinguish DMs from unconfigured groups.
+
+        Failures are non-fatal: names will be resolved on demand via
+        ``_resolve_sender_name``.
         """
         # Collect all group/channel IDs visible to this account
         if self.client:
@@ -214,18 +223,37 @@ class MaxListener:
             max_chat_ids.add(entry.max_chat_id)
 
         for chat_id in max_chat_ids:
-            try:
-                members, _ = await self.client.inner.load_members(chat_id)
-                for member in members:
-                    c = member.contact
-                    if c and c.id and c.id not in self._name_cache:
-                        name = self._extract_name(c)
-                        if name:
-                            self._name_cache[c.id] = name
-                log.info("Pre-loaded %d member names for MAX chat %s",
-                         len(members) if members else 0, chat_id)
-            except Exception as e:
-                log.warning("Failed to preload members for chat %s: %s", chat_id, e)
+            loaded = False
+            for attempt in range(3):
+                if not self.client or not self.client.is_connected:
+                    log.warning("Skipping preload for chat %s: client disconnected", chat_id)
+                    break
+                try:
+                    members, _ = await asyncio.wait_for(
+                        self.client.inner.load_members(chat_id),
+                        timeout=10.0,
+                    )
+                    for member in members:
+                        c = member.contact
+                        if c and c.id and c.id not in self._name_cache:
+                            name = self._extract_name(c)
+                            if name:
+                                self._name_cache[c.id] = name
+                    log.info("Pre-loaded %d member names for MAX chat %s",
+                             len(members) if members else 0, chat_id)
+                    loaded = True
+                    break
+                except asyncio.TimeoutError:
+                    log.warning("Preload members for chat %s timed out (attempt %d/3)",
+                                chat_id, attempt + 1)
+                except Exception as e:
+                    log.warning("Failed to preload members for chat %s (attempt %d/3): %s",
+                                chat_id, attempt + 1, e)
+                if attempt < 2:
+                    await asyncio.sleep(2)
+            if not loaded:
+                log.warning("Could not preload members for chat %s after 3 attempts "
+                            "(names will be resolved on demand)", chat_id)
 
     async def _resolve_sender_name(self, sender_id: int) -> str:
         """Resolve display name for a MAX user ID.
