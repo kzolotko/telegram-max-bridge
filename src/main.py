@@ -48,7 +48,7 @@ def setup_logging() -> LogRingBuffer:
     return log_buffer
 
 
-async def main():
+async def main(is_restart: bool = False):
     log_buffer = setup_logging()
     start_time = time.monotonic()
 
@@ -66,11 +66,25 @@ async def main():
 
     log.info("Initializing Telegram user accounts...")
     tg_pool = TelegramClientPool(config)
-    await tg_pool.init(users)
+    tg_ok = await tg_pool.init(users)
+    tg_ok_names = {u.name for u in tg_ok}
 
     log.info("Initializing MAX user accounts...")
     max_pool = MaxClientPool(config)
-    await max_pool.init(users)
+    max_ok = await max_pool.init(users)
+    max_ok_names = {u.name for u in max_ok}
+
+    # Only proceed with users that successfully initialized in both pools
+    ok_names = tg_ok_names & max_ok_names
+    skipped = {u.name for u in users} - ok_names
+    if skipped:
+        log.warning(
+            "Skipping user(s) due to failed initialization: %s",
+            ", ".join(sorted(skipped)),
+        )
+    users = [u for u in users if u.name in ok_names]
+    if not users:
+        raise RuntimeError("No users initialized successfully — cannot start bridge.")
 
     bridge = Bridge(lookup, message_store, tg_pool, max_pool, mirror_tracker, bridge_state)
 
@@ -112,7 +126,7 @@ async def main():
     dm_bridge = None
     if config.dm_bridge:
         log.info("Initializing DM bridge bot...")
-        dm_store = DmStore(db_path=db_path)
+        dm_store = DmStore(conn=message_store.connection)
         dm_store.start()
 
         bot_client = PyrogramClient(
@@ -190,9 +204,28 @@ async def main():
     if admin_bot:
         await admin_bot.start(shutdown_event=shutdown_event)
         log.info("Admin bot: enabled")
+        elapsed = time.monotonic() - start_time
+        bridge_count = len(config.bridges)
+        user_count = len(users)
+        label = "Restarted" if is_restart else "Started"
+        await admin_bot.notify_admins(
+            f"✅ Bridge {label.lower()} in {elapsed:.1f}s\n"
+            f"  {bridge_count} bridge(s), {user_count} user(s)"
+        )
 
     # Periodic health check — log connection status every 5 minutes
+    # and write heartbeat file for Docker healthcheck
+    health_file = os.path.join(config.sessions_dir, ".healthcheck")
+
+    def _write_heartbeat():
+        try:
+            with open(health_file, "w") as f:
+                f.write(str(time.time()))
+        except OSError:
+            log.warning("Failed to write healthcheck file")
+
     async def _health_loop():
+        _write_heartbeat()  # initial heartbeat on startup
         while not shutdown_event.is_set():
             try:
                 await asyncio.wait_for(shutdown_event.wait(), timeout=300)
@@ -209,6 +242,7 @@ async def main():
                 client = listener.client
                 status = "connected" if (client and client.is_connected) else "DISCONNECTED"
                 log.info("Health: MAX listener %s — %s", listener.user.name, status)
+            _write_heartbeat()
 
     health_task = asyncio.create_task(_health_loop())
 
@@ -217,6 +251,10 @@ async def main():
     try:
         await health_task
     except asyncio.CancelledError:
+        pass
+    try:
+        os.remove(health_file)
+    except OSError:
         pass
 
     if admin_bot:
@@ -232,7 +270,9 @@ async def main():
     await max_pool.stop()
     message_store.stop()
 
+    restart = admin_bot.restart_requested if admin_bot else False
     log.info("Stopped.")
+    return restart
 
 
 if __name__ == "__main__":

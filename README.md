@@ -8,7 +8,7 @@
 - **Telegram** — MTProto через [Pyrogram](https://docs.pyrogram.org/)
 - **MAX** — нативный TCP/SSL бинарный протокол (device_type=DESKTOP)
 
-Каждая запись в конфиге (`bridge`) связывает пару чатов и указывает, чей аккаунт выполняет зеркалирование:
+В конфиге отдельно описываются пользователи (`users`) и мосты (`bridges`). Каждый мост связывает пару чатов и указывает список пользователей, чьи аккаунты выполняют зеркалирование:
 
 ```
 Telegram-группа                        MAX-чат
@@ -36,6 +36,21 @@ Telegram-группа                        MAX-чат
 - Каждое сообщение пересылается **ровно один раз** — дубли исключены.
 
 **Поддерживается:** текст, фото, видео, файлы, аудио, голосовые, стикеры, ответы на сообщения (reply), редактирование, удаление.
+
+### Admin-бот (удалённое управление)
+
+Отдельный Telegram-бот для управления бриджем без SSH:
+
+- `/status` — аптайм, кол-во мостов и пользователей, состояние подключений
+- `/bridges`, `/users` — просмотр конфигурации
+- `/pause` / `/resume` — приостановка пересылки (глобально или по мосту)
+- `/addbridge`, `/rmbridge`, `/adduser`, `/rmuser` — управление конфигурацией
+- `/authmax`, `/authtg` — авторизация аккаунтов через бота
+- `/logs` — последние логи
+- `/restart` — перезапуск бриджа
+- `/config` — выгрузка текущего config.yaml
+
+Настройка: создать бота через @BotFather, добавить `admin_bot` секцию в `config.yaml`.
 
 ### DM-бридж (личные сообщения)
 
@@ -87,16 +102,17 @@ pip install -r requirements.txt
 
 Мастер проведёт по всем шагам:
 1. Ввод Telegram API credentials (получите на [my.telegram.org](https://my.telegram.org) → API development tools)
-2. Аутентификация TG-аккаунта (телефон + код)
-3. Аутентификация MAX-аккаунта (телефон + SMS)
-4. Выбор TG-группы и MAX-чата из списка чатов пользователя
-5. Запись `credentials.yaml` и `config.yaml`
+2. Добавление пользователей: аутентификация TG (телефон + код) и MAX (телефон + SMS)
+3. Создание мостов: выбор TG-группы и MAX-чата из списка, назначение пользователей
+4. Запись `credentials.yaml` и `config.yaml`
 
 Доступны отдельные режимы:
 
 ```bash
 ./bridge.sh setup credentials   # только API credentials (один раз при первом запуске)
-./bridge.sh setup bridges       # добавить/изменить пользователей и чаты
+./bridge.sh setup users         # управление пользователями (добавить/удалить/переавторизовать)
+./bridge.sh setup bridges       # управление мостами (добавить/удалить, назначить пользователей)
+./bridge.sh setup migrate       # конвертация старого формата конфига в новый
 ```
 
 ### 3. Запуск
@@ -120,7 +136,7 @@ dm_bridge:
   bot_token: "123456789:ABCdef..."
 ```
 
-Пользователи берутся автоматически из секции `bridges` — дополнительная настройка не нужна.
+Пользователи берутся автоматически из секции `users` — дополнительная настройка не нужна.
 
 ---
 
@@ -132,7 +148,7 @@ dm_bridge:
 telegram-max-bridge/
 ├── credentials.yaml     # API credentials (не в репозитории)
 ├── config.yaml          # конфигурация чатов (не в репозитории)
-├── sessions/            # файлы сессий (создаются при авторизации)
+├── sessions/            # файлы сессий + SQLite БД (создаются при авторизации)
 ├── docker-compose.yml
 └── Dockerfile
 ```
@@ -170,6 +186,24 @@ pip install -r requirements.txt
 
 > **Важно:** `setup` и `auth` всегда запускаются **локально** (`./bridge.sh setup`, `./bridge.sh auth`) — они интерактивны и требуют ввода с клавиатуры. Docker используется только для запуска самого бриджа.
 
+### Production-настройки
+
+Docker Compose уже настроен для production:
+
+| Параметр | Значение | Назначение |
+|----------|----------|------------|
+| `restart` | `unless-stopped` | Автоперезапуск при падении |
+| `healthcheck` | File-based heartbeat (каждые 60с) | Перезапуск при зависании event loop |
+| `stop_grace_period` | 15s | Время на graceful shutdown |
+| `mem_limit` | 512m | Защита от утечек памяти |
+| `logging` | json-file, 10m × 3 | Ротация логов |
+| `security_opt` | `no-new-privileges` | Security hardening |
+| `TZ` | `Europe/Moscow` | Корректные timestamps |
+
+**Health check**: бридж пишет timestamp в `sessions/.healthcheck` каждые 5 минут. Docker проверяет, что файл не старше 10 минут. Если event loop завис — контейнер перезапускается.
+
+**Dockerfile**: multi-stage build — gcc используется только для компиляции tgcrypto, в финальный образ не попадает.
+
 ### Что монтируется в контейнер
 
 | Путь на хосте         | Путь в контейнере        | Режим      |
@@ -177,6 +211,17 @@ pip install -r requirements.txt
 | `./credentials.yaml`  | `/app/credentials.yaml`  | read-only  |
 | `./config.yaml`       | `/app/config.yaml`       | read-only  |
 | `./sessions/`         | `/app/sessions/`         | read-write |
+
+### Бэкап сессий
+
+Директория `sessions/` содержит:
+- `*.session` / `*.max_session` — файлы авторизации (важно — при потере нужна повторная авторизация)
+- `bridge.db` — SQLite с маппингом сообщений (TTL 24ч — потеря некритична)
+
+```bash
+# Пример бэкапа (добавить в crontab хоста):
+0 3 * * * tar czf /backups/bridge-sessions-$(date +\%Y\%m\%d).tar.gz /path/to/sessions/
+```
 
 ---
 
@@ -187,7 +232,9 @@ pip install -r requirements.txt
 | `./bridge.sh start` | Запустить бридж локально |
 | `./bridge.sh setup` | Полный мастер настройки |
 | `./bridge.sh setup credentials` | Настроить API credentials |
-| `./bridge.sh setup bridges` | Добавить/изменить пользователей и чаты |
+| `./bridge.sh setup users` | Управление пользователями (добавить/удалить/переавторизовать) |
+| `./bridge.sh setup bridges` | Управление мостами (добавить/удалить, назначить пользователей) |
+| `./bridge.sh setup migrate` | Конвертация старого формата конфига в новый |
 | `./bridge.sh auth` | Повторная авторизация (при истёкшей сессии или ручном изменении конфига) |
 | `./bridge.sh docker up` | Собрать образ и запустить в фоне |
 | `./bridge.sh docker down` | Остановить Docker |
@@ -263,14 +310,16 @@ nano config.yaml
 Минимальный конфиг (один чат, один пользователь):
 
 ```yaml
+users:
+  - name: "alice"
+    telegram_user_id: 111111111
+    max_user_id: 205940119
+
 bridges:
   - name: "team-general"
     telegram_chat_id: -1001234567890
     max_chat_id: -72099000000001
-    user:
-      name: "alice"
-      telegram_user_id: 111111111
-      max_user_id: 205940119
+    users: ["alice"]
 ```
 
 > Подробные примеры (несколько чатов, несколько пользователей) — в `config.example.yaml`.
@@ -287,14 +336,17 @@ bridges:
 
 ```
 src/
-├── main.py              # Точка входа, инициализация компонентов
+├── main.py              # Точка входа, инициализация, health check heartbeat
 ├── config.py            # Загрузка credentials.yaml + config.yaml, ConfigLookup
 ├── types.py             # Датаклассы: AppConfig, BridgeEntry, UserMapping, BridgeEvent, MediaInfo
 ├── auth.py              # Интерактивная авторизация аккаунтов (по конфигу)
-├── setup.py             # Интерактивный мастер настройки (credentials + bridges)
-├── message_store.py     # In-memory маппинг ID сообщений (TTL 24h)
+├── setup.py             # Интерактивный мастер настройки (credentials + users + bridges)
+├── message_store.py     # SQLite-backed маппинг ID сообщений (TTL 24h, periodic VACUUM)
 ├── dm_bridge.py         # DM-бридж: MAX DMs ↔ TG бот (текст, медиа, edit, delete)
 ├── dm_store.py          # Маппинг bot_msg_id → MAX DM контекст (для reply routing)
+├── admin_bot.py         # Telegram-бот удалённого управления (status, config, auth, pause)
+├── bridge_state.py      # Глобальная/per-bridge пауза пересылки
+├── log_buffer.py        # In-memory ring buffer логов (для /logs в admin bot)
 ├── bridge/
 │   ├── bridge.py        # Роутинг событий, sender matching, отправка зеркал
 │   ├── mirror_tracker.py# Трекер ID зеркал (защита от эхо-петель)
@@ -357,7 +409,8 @@ src/
 | Code/pre/text_link форматирование | ⚠️ передаётся как plain text (MAX не поддерживает) |
 | Несколько пользователей | ✅ sender routing + primary listener |
 | DM-бридж (личные сообщения) | ✅ MAX DM → TG бот, ответ через reply (текст, фото, файлы, edit, delete) |
-| Reply/edit/delete после перезапуска | ⚠️ теряются (in-memory store, нет персистентности) |
+| Admin-бот | ✅ удалённое управление через Telegram (status, config, pause, auth, restart) |
+| Reply/edit/delete после перезапуска | ✅ SQLite-backed store (TTL 24ч) |
 
 ---
 

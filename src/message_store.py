@@ -12,6 +12,7 @@ class MessageStore:
 
     TTL_SECONDS = 24 * 60 * 60  # 24 hours
     CLEANUP_INTERVAL = 10 * 60  # 10 minutes
+    VACUUM_INTERVAL = 24 * 60 * 60  # 24 hours
 
     def __init__(self, db_path: str = "sessions/bridge.db"):
         self._db_path = db_path
@@ -20,7 +21,7 @@ class MessageStore:
 
     def start(self):
         Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(self._db_path)
+        self._conn = sqlite3.connect(self._db_path, timeout=10)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("""
             CREATE TABLE IF NOT EXISTS message_map (
@@ -45,10 +46,15 @@ class MessageStore:
         # Purge entries that expired while the process was down.
         cutoff = time.time() - self.TTL_SECONDS
         cur = self._conn.execute("DELETE FROM message_map WHERE created_at < ?", (cutoff,))
+        self._conn.commit()
         if cur.rowcount:
-            self._conn.commit()
             log.info("Startup: purged %d expired message mappings", cur.rowcount)
         self._cleanup_task = asyncio.create_task(self._cleanup_loop())
+
+    @property
+    def connection(self) -> sqlite3.Connection:
+        """Shared DB connection for other stores using the same database."""
+        return self._conn
 
     def stop(self):
         if self._cleanup_task:
@@ -110,12 +116,18 @@ class MessageStore:
         return [first] if first is not None else []
 
     async def _cleanup_loop(self):
+        last_vacuum = time.time()
         while True:
             await asyncio.sleep(self.CLEANUP_INTERVAL)
             cutoff = time.time() - self.TTL_SECONDS
             cur = self._conn.execute(
                 "DELETE FROM message_map WHERE created_at < ?", (cutoff,)
             )
+            self._conn.commit()
             if cur.rowcount:
-                self._conn.commit()
                 log.debug("Cleanup: removed %d expired message mappings", cur.rowcount)
+            # Periodic VACUUM to reclaim disk space
+            if time.time() - last_vacuum > self.VACUUM_INTERVAL:
+                self._conn.execute("VACUUM")
+                last_vacuum = time.time()
+                log.info("Database vacuumed")
