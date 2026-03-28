@@ -38,39 +38,51 @@ class MaxClientPool:
         self._reconnect_locks: dict[int, asyncio.Lock] = {}  # prevent parallel reconnects
         self._reconnect_delays: dict[int, float] = {}        # exponential backoff state
 
-    async def init(self, users: list[UserMapping]) -> list[int]:
-        """Initialize clients for all users. Returns list of MAX user IDs."""
-        user_ids = []
+    async def init(self, users: list[UserMapping]) -> list[UserMapping]:
+        """Initialize clients for all users. Returns list of successfully started users."""
+        started = []
         for user in users:
             session = MaxSession(user.max_session, self.config.sessions_dir)
             if not session.exists():
-                raise RuntimeError(
-                    f"MAX session not found for {user.name} ({user.max_session}). "
-                    f"Run 'python -m src.auth' first to authenticate."
+                log.warning(
+                    "MAX session not found for %s (%s) — skipping user",
+                    user.name, user.max_session,
                 )
+                continue
 
             login_token = session.load()
             device_id = session.load_device_id()
             if not device_id:
-                raise RuntimeError(
-                    f"No device_id in MAX session for {user.name}. "
-                    f"Re-authenticate with 'python -m src.auth'."
+                log.warning(
+                    "No device_id in MAX session for %s — skipping user",
+                    user.name,
                 )
+                continue
 
-            # Store credentials for reconnection
-            self._credentials[user.max_user_id] = (login_token, device_id)
-            self._reconnect_locks[user.max_user_id] = asyncio.Lock()
-            self._reconnect_delays[user.max_user_id] = _RECONNECT_DELAY
+            try:
+                # Store credentials for reconnection
+                self._credentials[user.max_user_id] = (login_token, device_id)
+                self._reconnect_locks[user.max_user_id] = asyncio.Lock()
+                self._reconnect_delays[user.max_user_id] = _RECONNECT_DELAY
 
-            client = BridgeMaxClient(token=login_token, device_id=device_id)
-            await client.connect_and_login()
+                client = BridgeMaxClient(token=login_token, device_id=device_id)
+                await client.connect_and_login()
+            except Exception as e:
+                log.warning(
+                    "Failed to start MAX client for %s: %s — skipping user",
+                    user.name, e,
+                )
+                self._credentials.pop(user.max_user_id, None)
+                self._reconnect_locks.pop(user.max_user_id, None)
+                self._reconnect_delays.pop(user.max_user_id, None)
+                continue
 
             self._clients[user.max_user_id] = client
-            user_ids.append(user.max_user_id)
             self._user_ids.append(user.max_user_id)
+            started.append(user)
             log.info("Started client for %s (MAX ID: %d)", user.name, user.max_user_id)
 
-        return user_ids
+        return started
 
     def get_client(self, max_user_id: int) -> BridgeMaxClient | None:
         return self._clients.get(max_user_id)

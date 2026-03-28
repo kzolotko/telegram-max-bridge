@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pyrogram import Client as PyrogramClient, filters
+from pyrogram import Client as PyrogramClient, enums, filters
 from pyrogram.handlers import MessageHandler
 from pyrogram.types import Message
 
@@ -33,7 +33,7 @@ CONFIG_FILE = "config.yaml"
 
 @dataclass
 class ConversationState:
-    flow: str       # "auth_max", "auth_tg", "add_bridge", "add_user"
+    flow: str       # "auth_max", "auth_tg", "add_bridge", "add_user", etc.
     step: str
     data: dict = field(default_factory=dict)
     client: Any = None  # NativeMaxAuth or Pyrogram Client during auth
@@ -65,6 +65,7 @@ class AdminBot:
         self._admin_ids: set[int] = set(config.admin_bot.admin_ids)
         self._conversations: dict[int, ConversationState] = {}
         self._shutdown_event = None  # set from main.py for /restart
+        self.restart_requested = False
 
         self.bot = PyrogramClient(
             name="admin_bot",
@@ -88,6 +89,8 @@ class AdminBot:
             ("resume", self._cmd_resume),
             ("addbridge", self._cmd_addbridge),
             ("rmbridge", self._cmd_rmbridge),
+            ("addbridgeuser", self._cmd_addbridgeuser),
+            ("rmbridgeuser", self._cmd_rmbridgeuser),
             ("adduser", self._cmd_adduser),
             ("rmuser", self._cmd_rmuser),
             ("authmax", self._cmd_authmax),
@@ -111,6 +114,14 @@ class AdminBot:
         await self.bot.start()
         me = await self.bot.get_me()
         log.info("Admin bot started: @%s (ID: %d)", me.username, me.id)
+
+    async def notify_admins(self, text: str):
+        """Send a message to all admin users."""
+        for uid in self._admin_ids:
+            try:
+                await self.bot.send_message(chat_id=uid, text=text)
+            except Exception as e:
+                log.warning("Failed to notify admin %s: %s", uid, e)
 
     async def stop(self):
         # Clean up active conversations
@@ -167,21 +178,35 @@ class AdminBot:
 
     def _get_bridge_names(self) -> list[str]:
         raw = self._read_config_raw()
-        seen = []
-        for b in raw.get("bridges", []):
-            name = b.get("name", "")
-            if name and name not in seen:
-                seen.append(name)
-        return seen
+        return [b.get("name", "") for b in raw.get("bridges", []) if b.get("name")]
 
     def _get_user_names(self) -> list[str]:
         raw = self._read_config_raw()
+        # New format: top-level users section
+        if isinstance(raw.get("users"), list) and raw["users"]:
+            return [u.get("name", "") for u in raw["users"] if u.get("name")]
+        # Old format: extract from bridges
         seen = []
         for b in raw.get("bridges", []):
             name = b.get("user", {}).get("name", "")
             if name and name not in seen:
                 seen.append(name)
         return seen
+
+    def _get_user_data(self, user_name: str) -> dict | None:
+        """Get user data dict by name from config."""
+        raw = self._read_config_raw()
+        # New format
+        if isinstance(raw.get("users"), list):
+            for u in raw["users"]:
+                if u.get("name") == user_name:
+                    return u
+        # Old format fallback
+        for b in raw.get("bridges", []):
+            u = b.get("user", {})
+            if u.get("name") == user_name:
+                return u
+        return None
 
     # ── Status & Monitoring Commands ─────────────────────────────────────────
 
@@ -200,9 +225,11 @@ class AdminBot:
             "\n"
             "Configuration:\n"
             "  /addbridge — add a new bridge (interactive)\n"
-            "  /rmbridge <name> — remove a bridge\n"
-            "  /adduser — add a new user (interactive)\n"
-            "  /rmuser <name> — remove a user\n"
+            "  /rmbridge — remove a bridge\n"
+            "  /addbridgeuser — add user to existing bridge\n"
+            "  /rmbridgeuser — remove user from bridge\n"
+            "  /adduser — add a new user to config\n"
+            "  /rmuser — remove a user\n"
             "  /config — show current config\n"
             "\n"
             "Authentication:\n"
@@ -266,28 +293,40 @@ class AdminBot:
             name = b.get("name", "?")
             tg = b.get("telegram_chat_id", "?")
             mx = b.get("max_chat_id", "?")
-            user = b.get("user", {}).get("name", "?")
+            # Support both new and old format
+            if "users" in b:
+                users_str = ", ".join(b["users"])
+            else:
+                users_str = b.get("user", {}).get("name", "?")
             paused = not self.state.should_forward(name)
             status = " [PAUSED]" if paused else ""
-            lines.append(f"{i}. {name}{status}\n   TG: {tg} <-> MAX: {mx}\n   user: {user}")
+            lines.append(f"{i}. {name}{status}\n   TG: {tg} <-> MAX: {mx}\n   users: {users_str}")
 
         await message.reply_text(self._truncate("\n\n".join(lines)))
 
     async def _cmd_users(self, client: PyrogramClient, message: Message):
         raw = self._read_config_raw()
-        seen: dict[str, dict] = {}
-        for b in raw.get("bridges", []):
-            u = b.get("user", {})
-            name = u.get("name", "")
-            if name and name not in seen:
-                seen[name] = u
 
-        if not seen:
+        # New format: top-level users
+        if isinstance(raw.get("users"), list) and raw["users"]:
+            user_list = raw["users"]
+        else:
+            # Old format: extract from bridges
+            seen: dict[str, dict] = {}
+            for b in raw.get("bridges", []):
+                u = b.get("user", {})
+                name = u.get("name", "")
+                if name and name not in seen:
+                    seen[name] = u
+            user_list = list(seen.values())
+
+        if not user_list:
             await message.reply_text("No users configured.")
             return
 
         lines = []
-        for name, u in seen.items():
+        for u in user_list:
+            name = u.get("name", "?")
             tg_id = u.get("telegram_user_id", "?")
             max_id = u.get("max_user_id", "?")
             lines.append(f"{name}: TG={tg_id} MAX={max_id}")
@@ -311,7 +350,7 @@ class AdminBot:
 
         text = "\n".join(entries)
         await message.reply_text(self._truncate(f"<pre>{text}</pre>", 4096),
-                                 parse_mode="html")
+                                 parse_mode=enums.ParseMode.HTML)
 
     # ── Forwarding Control ───────────────────────────────────────────────────
 
@@ -351,21 +390,96 @@ class AdminBot:
                 sanitized[section]["bot_token"] = token[:10] + "..."
         text = yaml.dump(sanitized, allow_unicode=True, default_flow_style=False)
         await message.reply_text(self._truncate(f"<pre>{text}</pre>", 4096),
-                                 parse_mode="html")
+                                 parse_mode=enums.ParseMode.HTML)
 
     async def _cmd_addbridge(self, client: PyrogramClient, message: Message):
-        self._conversations[message.from_user.id] = ConversationState(
-            flow="add_bridge", step="name",
-        )
+        users = self._get_user_names()
+        if not users:
+            await message.reply_text(
+                "No users configured. Use /adduser first to register a user."
+            )
+            return
+        conv = ConversationState(flow="add_bridge", step="name")
+        conv.data["_users"] = users
+        self._conversations[message.from_user.id] = conv
         await message.reply_text("Enter bridge name (e.g. team-general):")
 
     async def _cmd_rmbridge(self, client: PyrogramClient, message: Message):
-        parts = message.text.split(maxsplit=1)
-        if len(parts) < 2:
-            await message.reply_text("Usage: /rmbridge <name>")
+        bridge_names = self._get_bridge_names()
+        if not bridge_names:
+            await message.reply_text("No bridges configured.")
             return
 
-        name = parts[1].strip()
+        raw = self._read_config_raw()
+        bridges = raw.get("bridges", [])
+
+        lines = ["Select bridge to remove (enter number):"]
+        for i, b in enumerate(bridges, 1):
+            name = b.get("name", "?")
+            if "users" in b:
+                users_str = ", ".join(b["users"])
+            else:
+                users_str = b.get("user", {}).get("name", "?")
+            lines.append(f"  {i}. {name} ({users_str})")
+
+        conv = ConversationState(flow="rm_bridge", step="select")
+        conv.data["_bridges"] = bridges
+        self._conversations[message.from_user.id] = conv
+        await message.reply_text("\n".join(lines))
+
+    async def _conv_rm_bridge(self, message: Message, conv: ConversationState, text: str):
+        uid = message.from_user.id
+        bridges = conv.data.get("_bridges", [])
+
+        if conv.step == "select":
+            try:
+                idx = int(text) - 1
+                if not (0 <= idx < len(bridges)):
+                    raise ValueError
+            except ValueError:
+                await message.reply_text(f"Enter a number between 1 and {len(bridges)}:")
+                return
+
+            target = bridges[idx]
+            name = target.get("name", "?")
+            bridge_users = target.get("users", [])
+
+            if len(bridge_users) <= 1:
+                # Single or no users — remove entire bridge
+                self._conversations.pop(uid, None)
+                await self._do_rmbridge(message, name)
+            else:
+                # Multiple users — ask what to remove
+                lines = [f"Bridge '{name}' has {len(bridge_users)} user(s):"]
+                lines.append(f"  1. Remove entire bridge")
+                for i, u in enumerate(bridge_users, 2):
+                    lines.append(f"  {i}. Remove only user '{u}'")
+                conv.data["_name"] = name
+                conv.data["_bridge_users"] = bridge_users
+                conv.step = "confirm_user"
+                await message.reply_text("\n".join(lines))
+
+        elif conv.step == "confirm_user":
+            name = conv.data["_name"]
+            bridge_users = conv.data.get("_bridge_users", [])
+            total_options = 1 + len(bridge_users)
+            try:
+                choice = int(text)
+                if not (1 <= choice <= total_options):
+                    raise ValueError
+            except ValueError:
+                await message.reply_text(f"Enter a number between 1 and {total_options}:")
+                return
+
+            self._conversations.pop(uid, None)
+
+            if choice == 1:
+                await self._do_rmbridge(message, name)
+            else:
+                user_name = bridge_users[choice - 2]
+                await self._do_rmbridge_user(message, name, user_name)
+
+    async def _do_rmbridge(self, message: Message, name: str):
         raw = self._read_config_raw()
         bridges = raw.get("bridges", [])
         new_bridges = [b for b in bridges if b.get("name") != name]
@@ -374,11 +488,49 @@ class AdminBot:
             await message.reply_text(f"Bridge '{name}' not found.")
             return
 
-        removed = len(bridges) - len(new_bridges)
         raw["bridges"] = new_bridges
         self._write_config_raw(raw)
         await message.reply_text(
-            f"Removed {removed} entry(ies) for '{name}'.\n"
+            f"Bridge '{name}' removed.\n"
+            f"Use /restart to apply changes."
+        )
+
+    async def _do_rmbridge_user(self, message: Message, bridge_name: str, user_name: str):
+        raw = self._read_config_raw()
+        bridges = raw.get("bridges", [])
+
+        for b in bridges:
+            if b.get("name") == bridge_name and "users" in b:
+                if user_name in b["users"]:
+                    b["users"].remove(user_name)
+                    if not b["users"]:
+                        bridges.remove(b)
+                        self._write_config_raw(raw)
+                        await message.reply_text(
+                            f"Removed last user '{user_name}' from '{bridge_name}'. "
+                            f"Bridge removed.\nUse /restart to apply changes."
+                        )
+                    else:
+                        self._write_config_raw(raw)
+                        await message.reply_text(
+                            f"Removed user '{user_name}' from bridge '{bridge_name}'.\n"
+                            f"Use /restart to apply changes."
+                        )
+                    return
+
+        # Old format fallback
+        new_bridges = [
+            b for b in bridges
+            if not (b.get("name") == bridge_name and b.get("user", {}).get("name") == user_name)
+        ]
+        if len(new_bridges) == len(bridges):
+            await message.reply_text(f"Entry for '{bridge_name}' / '{user_name}' not found.")
+            return
+
+        raw["bridges"] = new_bridges
+        self._write_config_raw(raw)
+        await message.reply_text(
+            f"Removed '{bridge_name}' for user '{user_name}'.\n"
             f"Use /restart to apply changes."
         )
 
@@ -389,25 +541,62 @@ class AdminBot:
         await message.reply_text("Enter username (lowercase letters, digits, underscores):")
 
     async def _cmd_rmuser(self, client: PyrogramClient, message: Message):
-        parts = message.text.split(maxsplit=1)
-        if len(parts) < 2:
-            await message.reply_text("Usage: /rmuser <name>")
+        user_names = self._get_user_names()
+        if not user_names:
+            await message.reply_text("No users configured.")
             return
 
-        name = parts[1].strip()
+        # Show which bridges reference each user
         raw = self._read_config_raw()
-        bridges = raw.get("bridges", [])
-        new_bridges = [b for b in bridges if b.get("user", {}).get("name") != name]
+        lines = ["Select user to remove (enter number):"]
+        for i, name in enumerate(user_names, 1):
+            bridges_with_user = []
+            for b in raw.get("bridges", []):
+                if name in b.get("users", []):
+                    bridges_with_user.append(b.get("name", "?"))
+            bridge_info = f"  (in: {', '.join(bridges_with_user)})" if bridges_with_user else ""
+            lines.append(f"  {i}. {name}{bridge_info}")
+        lines.append("\nThis will remove the user from all bridges.")
+        conv = ConversationState(flow="rm_user", step="select")
+        conv.data["_users"] = user_names
+        self._conversations[message.from_user.id] = conv
+        await message.reply_text("\n".join(lines))
 
-        if len(new_bridges) == len(bridges):
-            await message.reply_text(f"User '{name}' not found in any bridge.")
+    async def _conv_rm_user(self, message: Message, conv: ConversationState, text: str):
+        uid = message.from_user.id
+        users = conv.data.get("_users", [])
+        try:
+            idx = int(text) - 1
+            if not (0 <= idx < len(users)):
+                raise ValueError
+        except ValueError:
+            await message.reply_text(f"Enter a number between 1 and {len(users)}:")
             return
 
-        removed = len(bridges) - len(new_bridges)
-        raw["bridges"] = new_bridges
+        name = users[idx]
+        self._conversations.pop(uid, None)
+
+        raw = self._read_config_raw()
+
+        # New format: remove from users section and from all bridges
+        if isinstance(raw.get("users"), list):
+            raw["users"] = [u for u in raw["users"] if u.get("name") != name]
+            # Remove from all bridges' users lists
+            for b in raw.get("bridges", []):
+                if "users" in b and name in b["users"]:
+                    b["users"].remove(name)
+            # Remove empty bridges
+            raw["bridges"] = [b for b in raw.get("bridges", []) if b.get("users")]
+        else:
+            # Old format: remove bridge entries with this user
+            raw["bridges"] = [
+                b for b in raw.get("bridges", [])
+                if b.get("user", {}).get("name") != name
+            ]
+
         self._write_config_raw(raw)
         await message.reply_text(
-            f"Removed {removed} bridge(s) for user '{name}'.\n"
+            f"User '{name}' removed.\n"
             f"Use /restart to apply changes."
         )
 
@@ -496,6 +685,7 @@ class AdminBot:
 
     async def _cmd_restart(self, client: PyrogramClient, message: Message):
         await message.reply_text("Restarting bridge...")
+        self.restart_requested = True
         if self._shutdown_event:
             self._shutdown_event.set()
         else:
@@ -526,12 +716,20 @@ class AdminBot:
         try:
             if conv.flow == "add_bridge":
                 await self._conv_add_bridge(message, conv, text)
+            elif conv.flow == "add_bridge_user":
+                await self._conv_add_bridge_user(message, conv, text)
+            elif conv.flow == "rm_bridge_user":
+                await self._conv_rm_bridge_user(message, conv, text)
             elif conv.flow == "add_user":
                 await self._conv_add_user(message, conv, text)
             elif conv.flow == "auth_max":
                 await self._conv_auth_max(message, conv, text)
             elif conv.flow == "auth_tg":
                 await self._conv_auth_tg(message, conv, text)
+            elif conv.flow == "rm_bridge":
+                await self._conv_rm_bridge(message, conv, text)
+            elif conv.flow == "rm_user":
+                await self._conv_rm_user(message, conv, text)
         except Exception as e:
             log.error("Conversation error (%s/%s): %s", conv.flow, conv.step, e, exc_info=True)
             await self._cleanup_conversation(conv)
@@ -540,41 +738,121 @@ class AdminBot:
 
     # ── Add Bridge Conversation ──────────────────────────────────────────────
 
+    async def _load_tg_chats(self, conv: ConversationState) -> bool:
+        """Load and cache TG chats. Returns False if unavailable."""
+        if "_tg_chats" in conv.data:
+            return True
+        user_data = conv.data["_user"]
+        tg_client = self.tg_pool.get_client(user_data["telegram_user_id"])
+        if not tg_client:
+            return False
+        try:
+            chats = []
+            async for dialog in tg_client.get_dialogs():
+                if dialog.chat.type in (enums.ChatType.GROUP, enums.ChatType.SUPERGROUP):
+                    chats.append(dialog.chat)
+            chats.sort(key=lambda c: (c.title or "").lower())
+            conv.data["_tg_chats"] = [(c.id, c.title or f"Chat {c.id}") for c in chats]
+            return bool(chats)
+        except Exception as e:
+            log.warning("Failed to load TG chats: %s", e)
+            return False
+
+    def _load_max_chats(self, conv: ConversationState) -> bool:
+        """Load and cache MAX chats. Returns False if unavailable."""
+        if "_max_chats" in conv.data:
+            return True
+        user_data = conv.data["_user"]
+        max_client = self.max_pool.get_client(user_data["max_user_id"])
+        if not max_client:
+            return False
+        try:
+            chats = []
+            for chat in max_client.inner.chats:
+                chats.append({
+                    "id": chat.id,
+                    "title": chat.title or f"Chat {chat.id}",
+                    "type": "CHAT",
+                    "members": getattr(chat, "participants_count", None),
+                })
+            for ch in max_client.inner.channels:
+                chats.append({
+                    "id": ch.id,
+                    "title": ch.title or f"Channel {ch.id}",
+                    "type": "CHANNEL",
+                    "members": getattr(ch, "participants_count", None),
+                })
+            chats.sort(key=lambda c: c["title"].lower())
+            conv.data["_max_chats"] = chats
+            return bool(chats)
+        except Exception as e:
+            log.warning("Failed to load MAX chats: %s", e)
+            return False
+
+    def _search_tg(self, chats: list, query: str) -> list:
+        q = query.lower()
+        return [(cid, title) for cid, title in chats if q in title.lower()]
+
+    def _search_max(self, chats: list, query: str) -> list:
+        q = query.lower()
+        return [c for c in chats if q in c["title"].lower()]
+
+    async def _finish_max_selection(self, message: Message, conv: ConversationState):
+        """Transition after MAX chat is selected — save bridge."""
+        uid = message.from_user.id
+        max_title = conv.data.get("max_chat_title", str(conv.data["max_chat_id"]))
+        await message.reply_text(f"✅ MAX: {max_title} ({conv.data['max_chat_id']})")
+
+        bridge_name = conv.data["_bridge_name"]
+        primary_user = conv.data.get("_primary_user", conv.data["_user"]["name"])
+        raw = self._read_config_raw()
+
+        new_bridge = {
+            "name": bridge_name,
+            "telegram_chat_id": conv.data["tg_chat_id"],
+            "max_chat_id": conv.data["max_chat_id"],
+            "users": [primary_user],
+        }
+
+        # Ensure users section exists
+        if not isinstance(raw.get("users"), list):
+            seen_users: dict[str, dict] = {}
+            for b in raw.get("bridges", []):
+                u = b.get("user", {})
+                uname = u.get("name", "")
+                if uname and uname not in seen_users:
+                    seen_users[uname] = u
+            raw["users"] = list(seen_users.values())
+
+        raw.setdefault("bridges", []).append(new_bridge)
+        self._write_config_raw(raw)
+        self._conversations.pop(uid, None)
+
+        await message.reply_text(
+            f"Bridge '{bridge_name}' added.\n"
+            f"  TG: {conv.data.get('tg_chat_title', conv.data['tg_chat_id'])} ({conv.data['tg_chat_id']})\n"
+            f"  MAX: {max_title} ({conv.data['max_chat_id']})\n"
+            f"  users: {primary_user}\n\n"
+            f"Use /addbridgeuser to add more users.\n"
+            f"Use /restart to apply changes."
+        )
+
     async def _conv_add_bridge(self, message: Message, conv: ConversationState, text: str):
         uid = message.from_user.id
 
         if conv.step == "name":
-            conv.data["name"] = text
-            conv.step = "tg_chat_id"
-            await message.reply_text("Enter Telegram chat ID (negative number):")
+            bridge_name = text.strip()
+            if bridge_name in self._get_bridge_names():
+                await message.reply_text(
+                    f"Bridge '{bridge_name}' already exists. Enter a different name:"
+                )
+                return
+            conv.data["_bridge_name"] = bridge_name
 
-        elif conv.step == "tg_chat_id":
-            try:
-                conv.data["tg_chat_id"] = int(text)
-            except ValueError:
-                await message.reply_text("Must be a number. Try again:")
-                return
-            conv.step = "max_chat_id"
-            await message.reply_text(
-                "Enter MAX chat ID (number or web.max.ru URL):"
-            )
-
-        elif conv.step == "max_chat_id":
-            try:
-                conv.data["max_chat_id"] = parse_max_chat_id(text)
-            except ValueError as e:
-                await message.reply_text(f"{e}\nTry again:")
-                return
-            # Show users to pick from
-            users = self._get_user_names()
-            if not users:
-                await message.reply_text("No users configured. Add a user first with /adduser.")
-                self._conversations.pop(uid, None)
-                return
-            lines = ["Select user (enter number):"]
+            users = conv.data.get("_users", [])
+            lines = [f"Bridge: {bridge_name}\n\nSelect primary user (enter number):"]
             for i, name in enumerate(users, 1):
                 lines.append(f"  {i}. {name}")
-            conv.data["_users"] = users
             conv.step = "user"
             await message.reply_text("\n".join(lines))
 
@@ -589,39 +867,327 @@ class AdminBot:
                 return
 
             user_name = users[idx]
-            # Find user details from config
-            raw = self._read_config_raw()
-            user_data = None
-            for b in raw.get("bridges", []):
-                u = b.get("user", {})
-                if u.get("name") == user_name:
-                    user_data = u
-                    break
-
+            user_data = self._get_user_data(user_name)
             if not user_data:
                 await message.reply_text(f"User '{user_name}' details not found.")
                 self._conversations.pop(uid, None)
                 return
 
-            # Write to config
-            new_bridge = {
-                "name": conv.data["name"],
-                "telegram_chat_id": conv.data["tg_chat_id"],
-                "max_chat_id": conv.data["max_chat_id"],
-                "user": {
-                    "name": user_data["name"],
-                    "telegram_user_id": user_data["telegram_user_id"],
-                    "max_user_id": user_data["max_user_id"],
-                },
-            }
-            raw.setdefault("bridges", []).append(new_bridge)
-            self._write_config_raw(raw)
+            conv.data["_user"] = user_data
+            conv.data["_primary_user"] = user_name
+            await message.reply_text(
+                f"User: {user_name}\n\nEnter Telegram chat name (or part of it):"
+            )
+            conv.step = "tg_search"
+
+        elif conv.step == "tg_search":
+            ok = await self._load_tg_chats(conv)
+            if not ok:
+                await message.reply_text(
+                    "Could not load Telegram chats.\n"
+                    "Enter Telegram chat ID manually (negative number):"
+                )
+                conv.step = "tg_chat_manual"
+                return
+            matches = self._search_tg(conv.data["_tg_chats"], text)
+            if not matches:
+                await message.reply_text(
+                    f'No Telegram chats matching "{text}". Try again:'
+                )
+                return
+            if len(matches) == 1:
+                cid, title = matches[0]
+                conv.data["tg_chat_id"] = cid
+                conv.data["tg_chat_title"] = title
+                await message.reply_text(
+                    f"✅ TG: {title} ({cid})\n\nEnter MAX chat name (or part of it):"
+                )
+                conv.step = "max_search"
+            else:
+                lines = [f'Found {len(matches)} Telegram chats matching "{text}":']
+                for i, (cid, title) in enumerate(matches, 1):
+                    lines.append(f"  {i}. {title} ({cid})")
+                lines.append("\nEnter number to select, or search again:")
+                conv.data["_tg_matches"] = matches
+                conv.step = "tg_select"
+                await message.reply_text("\n".join(lines))
+
+        elif conv.step == "tg_select":
+            matches = conv.data.get("_tg_matches", [])
+            try:
+                idx = int(text) - 1
+                if not (0 <= idx < len(matches)):
+                    raise ValueError
+                cid, title = matches[idx]
+                conv.data["tg_chat_id"] = cid
+                conv.data["tg_chat_title"] = title
+                conv.data.pop("_tg_matches", None)
+                await message.reply_text(
+                    f"✅ TG: {title} ({cid})\n\nEnter MAX chat name (or part of it):"
+                )
+                conv.step = "max_search"
+            except ValueError:
+                # Treat as new search
+                conv.data.pop("_tg_matches", None)
+                conv.step = "tg_search"
+                await self._conv_add_bridge(message, conv, text)
+
+        elif conv.step == "tg_chat_manual":
+            try:
+                conv.data["tg_chat_id"] = int(text)
+                conv.data["tg_chat_title"] = str(conv.data["tg_chat_id"])
+            except ValueError:
+                await message.reply_text("Must be a number. Try again:")
+                return
+            await message.reply_text(
+                f"✅ TG: {conv.data['tg_chat_id']}\n\nEnter MAX chat name (or part of it):"
+            )
+            conv.step = "max_search"
+
+        elif conv.step == "max_search":
+            # Allow manual URL/ID entry directly
+            try:
+                conv.data["max_chat_id"] = parse_max_chat_id(text)
+                conv.data["max_chat_title"] = str(conv.data["max_chat_id"])
+                await self._finish_max_selection(message, conv)
+                return
+            except ValueError:
+                pass
+
+            ok = self._load_max_chats(conv)
+            if not ok:
+                await message.reply_text(
+                    "Could not load MAX chats.\n"
+                    "Enter MAX chat ID or URL manually:"
+                )
+                conv.step = "max_chat_manual"
+                return
+            matches = self._search_max(conv.data["_max_chats"], text)
+            if not matches:
+                await message.reply_text(
+                    f'No MAX chats matching "{text}". Try again, or send a MAX chat URL / ID:'
+                )
+                return
+            if len(matches) == 1:
+                c = matches[0]
+                conv.data["max_chat_id"] = c["id"]
+                conv.data["max_chat_title"] = c["title"]
+                await self._finish_max_selection(message, conv)
+            else:
+                lines = [f'Found {len(matches)} MAX chats matching "{text}":']
+                for i, c in enumerate(matches, 1):
+                    members = f", {c['members']} members" if c["members"] else ""
+                    lines.append(f"  {i}. [{c['type']}] {c['title']}{members}")
+                lines.append("\nEnter number to select, or search again:")
+                conv.data["_max_matches"] = matches
+                conv.step = "max_select"
+                await message.reply_text("\n".join(lines))
+
+        elif conv.step == "max_select":
+            matches = conv.data.get("_max_matches", [])
+            try:
+                idx = int(text) - 1
+                if not (0 <= idx < len(matches)):
+                    raise ValueError
+                c = matches[idx]
+                conv.data["max_chat_id"] = c["id"]
+                conv.data["max_chat_title"] = c["title"]
+                conv.data.pop("_max_matches", None)
+                await self._finish_max_selection(message, conv)
+            except ValueError:
+                # Treat as new search
+                conv.data.pop("_max_matches", None)
+                conv.step = "max_search"
+                await self._conv_add_bridge(message, conv, text)
+
+        elif conv.step == "max_chat_manual":
+            try:
+                conv.data["max_chat_id"] = parse_max_chat_id(text)
+                conv.data["max_chat_title"] = str(conv.data["max_chat_id"])
+            except ValueError as e:
+                await message.reply_text(f"{e}\nTry again:")
+                return
+            await self._finish_max_selection(message, conv)
+
+    # ── Add Bridge User Conversation ─────────────────────────────────────────
+
+    async def _cmd_addbridgeuser(self, client: PyrogramClient, message: Message):
+        """Add an existing user to an existing bridge."""
+        raw = self._read_config_raw()
+        bridges = raw.get("bridges", [])
+        if not bridges:
+            await message.reply_text("No bridges configured.")
+            return
+
+        lines = ["Select bridge (enter number):"]
+        for i, b in enumerate(bridges, 1):
+            name = b.get("name", "?")
+            if "users" in b:
+                users_str = ", ".join(b["users"])
+            else:
+                users_str = b.get("user", {}).get("name", "?")
+            lines.append(f"  {i}. {name} ({users_str})")
+
+        conv = ConversationState(flow="add_bridge_user", step="select_bridge")
+        conv.data["_bridges"] = bridges
+        self._conversations[message.from_user.id] = conv
+        await message.reply_text("\n".join(lines))
+
+    async def _conv_add_bridge_user(self, message: Message, conv: ConversationState, text: str):
+        uid = message.from_user.id
+
+        if conv.step == "select_bridge":
+            bridges = conv.data.get("_bridges", [])
+            try:
+                idx = int(text) - 1
+                if not (0 <= idx < len(bridges)):
+                    raise ValueError
+            except ValueError:
+                await message.reply_text(f"Enter a number between 1 and {len(bridges)}:")
+                return
+
+            target = bridges[idx]
+            conv.data["_target_bridge"] = target
+            bridge_user_names = set(target.get("users", []))
+
+            # Show available users not already in this bridge
+            all_users = self._get_user_names()
+            available = [u for u in all_users if u not in bridge_user_names]
+
+            if not available:
+                self._conversations.pop(uid, None)
+                await message.reply_text("All users are already in this bridge.")
+                return
+
+            lines = [f"Bridge: {target.get('name', '?')}\n\nSelect user to add (enter number):"]
+            for i, name in enumerate(available, 1):
+                lines.append(f"  {i}. {name}")
+            conv.data["_available"] = available
+            conv.step = "select_user"
+            await message.reply_text("\n".join(lines))
+
+        elif conv.step == "select_user":
+            available = conv.data.get("_available", [])
+            try:
+                idx = int(text) - 1
+                if not (0 <= idx < len(available)):
+                    raise ValueError
+            except ValueError:
+                await message.reply_text(f"Enter a number between 1 and {len(available)}:")
+                return
+
+            user_name = available[idx]
+            target = conv.data["_target_bridge"]
+            bridge_name = target.get("name", "?")
             self._conversations.pop(uid, None)
 
+            # Write to config
+            raw = self._read_config_raw()
+            for b in raw.get("bridges", []):
+                if b.get("name") == bridge_name and "users" in b:
+                    if user_name not in b["users"]:
+                        b["users"].append(user_name)
+                    break
+
+            self._write_config_raw(raw)
             await message.reply_text(
-                f"Bridge '{conv.data['name']}' added.\n"
-                f"  TG: {conv.data['tg_chat_id']} <-> MAX: {conv.data['max_chat_id']}\n"
-                f"  user: {user_name}\n\n"
+                f"User '{user_name}' added to bridge '{bridge_name}'.\n"
+                f"Use /restart to apply changes."
+            )
+
+    # ── Remove Bridge User Conversation ──────────────────────────────────────
+
+    async def _cmd_rmbridgeuser(self, client: PyrogramClient, message: Message):
+        """Remove a user from an existing bridge."""
+        raw = self._read_config_raw()
+        bridges = [b for b in raw.get("bridges", []) if len(b.get("users", [])) > 0]
+        if not bridges:
+            await message.reply_text("No bridges configured.")
+            return
+
+        lines = ["Select bridge (enter number):"]
+        for i, b in enumerate(bridges, 1):
+            name = b.get("name", "?")
+            users_str = ", ".join(b.get("users", []))
+            lines.append(f"  {i}. {name} ({users_str})")
+
+        conv = ConversationState(flow="rm_bridge_user", step="select_bridge")
+        conv.data["_bridges"] = bridges
+        self._conversations[message.from_user.id] = conv
+        await message.reply_text("\n".join(lines))
+
+    async def _conv_rm_bridge_user(self, message: Message, conv: ConversationState, text: str):
+        uid = message.from_user.id
+
+        if conv.step == "select_bridge":
+            bridges = conv.data.get("_bridges", [])
+            try:
+                idx = int(text) - 1
+                if not (0 <= idx < len(bridges)):
+                    raise ValueError
+            except ValueError:
+                await message.reply_text(f"Enter a number between 1 and {len(bridges)}:")
+                return
+
+            target = bridges[idx]
+            bridge_users = target.get("users", [])
+
+            if len(bridge_users) < 1:
+                self._conversations.pop(uid, None)
+                await message.reply_text("Bridge has no users.")
+                return
+
+            conv.data["_target_bridge_name"] = target.get("name", "?")
+            conv.data["_bridge_users"] = bridge_users
+
+            lines = [f"Bridge: {target.get('name', '?')}\n\nSelect user to remove (enter number):"]
+            for i, uname in enumerate(bridge_users, 1):
+                role = " (primary)" if i == 1 else ""
+                lines.append(f"  {i}. {uname}{role}")
+            conv.step = "select_user"
+            await message.reply_text("\n".join(lines))
+
+        elif conv.step == "select_user":
+            bridge_users = conv.data.get("_bridge_users", [])
+            try:
+                idx = int(text) - 1
+                if not (0 <= idx < len(bridge_users)):
+                    raise ValueError
+            except ValueError:
+                await message.reply_text(f"Enter a number between 1 and {len(bridge_users)}:")
+                return
+
+            user_name = bridge_users[idx]
+            bridge_name = conv.data["_target_bridge_name"]
+            self._conversations.pop(uid, None)
+
+            # Warnings for primary / last user
+            if idx == 0 and len(bridge_users) > 1:
+                next_primary = bridge_users[1]
+                warning = f"'{next_primary}' will become the new primary.\n"
+            elif len(bridge_users) == 1:
+                warning = "This is the last user — bridge will be removed.\n"
+            else:
+                warning = ""
+
+            raw = self._read_config_raw()
+            for b in raw.get("bridges", []):
+                if b.get("name") == bridge_name and "users" in b:
+                    if user_name in b["users"]:
+                        b["users"].remove(user_name)
+                    if not b["users"]:
+                        raw["bridges"].remove(b)
+                        self._write_config_raw(raw)
+                        await message.reply_text(
+                            f"{warning}Bridge '{bridge_name}' removed (no users left).\n"
+                            f"Use /restart to apply changes."
+                        )
+                        return
+                    break
+
+            self._write_config_raw(raw)
+            await message.reply_text(
+                f"{warning}User '{user_name}' removed from bridge '{bridge_name}'.\n"
                 f"Use /restart to apply changes."
             )
 
@@ -633,6 +1199,10 @@ class AdminBot:
         if conv.step == "name":
             if not re.match(r'^[a-z0-9_]+$', text):
                 await message.reply_text("Use only lowercase letters, digits, underscores. Try again:")
+                return
+            # Uniqueness check
+            if text in self._get_user_names():
+                await message.reply_text(f"User '{text}' already exists. Enter a different name:")
                 return
             conv.data["name"] = text
             conv.step = "tg_user_id"
@@ -654,9 +1224,20 @@ class AdminBot:
                 await message.reply_text("Must be a number. Try again:")
                 return
 
+            # Save to config
+            raw = self._read_config_raw()
+            if not isinstance(raw.get("users"), list):
+                raw["users"] = []
+            raw["users"].append({
+                "name": conv.data["name"],
+                "telegram_user_id": conv.data["tg_user_id"],
+                "max_user_id": conv.data["max_user_id"],
+            })
+            self._write_config_raw(raw)
+
             self._conversations.pop(uid, None)
             await message.reply_text(
-                f"User '{conv.data['name']}' registered.\n"
+                f"User '{conv.data['name']}' added to config.\n"
                 f"  TG: {conv.data['tg_user_id']}\n"
                 f"  MAX: {conv.data['max_user_id']}\n\n"
                 f"Next steps:\n"

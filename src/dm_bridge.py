@@ -112,7 +112,7 @@ class DmBridge:
                              max_msg_id=msg_id, sender_name=sender_name),
                     tg_owner_id=tg_owner,
                 )
-                log.info("MAX DM edit → TG bot: from %s → %s bot_msg=%d",
+                log.debug("MAX DM edit → TG bot: from %s → %s bot_msg=%d",
                          sender_name, user.name, bot_msg.id)
                 return
 
@@ -155,7 +155,7 @@ class DmBridge:
                                  max_msg_id=msg_id, sender_name=sender_name),
                         tg_owner_id=tg_owner,
                     )
-                    log.info("MAX DM media → TG bot: %d item(s) from %s → %s",
+                    log.debug("MAX DM media → TG bot: %d item(s) from %s → %s",
                              len(media_list), sender_name, user.name)
                 return
 
@@ -168,7 +168,7 @@ class DmBridge:
                          max_msg_id=msg_id, sender_name=sender_name),
                 tg_owner_id=tg_owner,
             )
-            log.info("MAX DM → TG bot: from %s (chat=%s) → %s bot_msg=%d",
+            log.debug("MAX DM → TG bot: from %s (chat=%s) → %s bot_msg=%d",
                      sender_name, chat_id, user.name, bot_msg.id)
 
         except Exception as e:
@@ -211,7 +211,7 @@ class DmBridge:
                     )
                     if max_msg_id:
                         self.mirrors.mark_max(max_msg_id)
-                        log.info("TG bot photo reply → MAX DM: %s → %s",
+                        log.debug("TG bot photo reply → MAX DM: %s → %s",
                                  user.name, ctx.sender_name)
                 return
 
@@ -241,7 +241,7 @@ class DmBridge:
                     )
                     if max_msg_id:
                         self.mirrors.mark_max(max_msg_id)
-                        log.info("TG bot file reply → MAX DM: %s → %s (%s)",
+                        log.debug("TG bot file reply → MAX DM: %s → %s (%s)",
                                  user.name, ctx.sender_name, fname)
                 return
 
@@ -255,7 +255,7 @@ class DmBridge:
             )
             if max_msg_id:
                 self.mirrors.mark_max(max_msg_id)
-                log.info("TG bot reply → MAX DM: %s → %s (chat=%s)",
+                log.debug("TG bot reply → MAX DM: %s → %s (chat=%s)",
                          user.name, ctx.sender_name, max_chat_id)
             else:
                 log.error("Failed to send reply to MAX DM (chat=%s)", max_chat_id)

@@ -16,7 +16,6 @@ import time
 import asyncio
 import logging
 from dataclasses import dataclass
-from pathlib import Path
 
 log = logging.getLogger("bridge.dm_store")
 
@@ -36,15 +35,11 @@ class DmStore:
     CLEANUP_INTERVAL = 10 * 60   # 10 minutes
     MAX_SIZE = 50_000
 
-    def __init__(self, db_path: str = "sessions/bridge.db"):
-        self._db_path = db_path
-        self._conn: sqlite3.Connection | None = None
+    def __init__(self, conn: sqlite3.Connection):
+        self._conn = conn
         self._cleanup_task: asyncio.Task | None = None
 
     def start(self):
-        Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(self._db_path)
-        self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("""
             CREATE TABLE IF NOT EXISTS dm_map (
                 tg_owner_id  INTEGER NOT NULL,
@@ -69,17 +64,14 @@ class DmStore:
         # Purge entries that expired while the process was down.
         cutoff = time.time() - self.TTL_SECONDS
         cur = self._conn.execute("DELETE FROM dm_map WHERE created_at < ?", (cutoff,))
+        self._conn.commit()
         if cur.rowcount:
-            self._conn.commit()
             log.info("Startup: purged %d expired DM mappings", cur.rowcount)
         self._cleanup_task = asyncio.create_task(self._cleanup_loop())
 
     def stop(self):
         if self._cleanup_task:
             self._cleanup_task.cancel()
-        if self._conn:
-            self._conn.close()
-            self._conn = None
 
     def store(self, bot_msg_id: int, context: DmContext, tg_owner_id: int):
         """Store mapping from bot message ID to MAX DM context."""
@@ -137,6 +129,6 @@ class DmStore:
             await asyncio.sleep(self.CLEANUP_INTERVAL)
             cutoff = time.time() - self.TTL_SECONDS
             cur = self._conn.execute("DELETE FROM dm_map WHERE created_at < ?", (cutoff,))
+            self._conn.commit()
             if cur.rowcount:
-                self._conn.commit()
                 log.debug("Cleanup: removed %d expired DM mappings", cur.rowcount)

@@ -555,7 +555,7 @@ class MaxListener:
                     )
                     if file_req and file_req.url:
                         media_url = file_req.url
-                        log.info("Resolved file URL via opcode 88: fileId=%s", att["fileId"])
+                        log.debug("Resolved file URL via opcode 88: fileId=%s", att["fileId"])
                 except Exception as e:
                     log.warning("Failed to resolve file URL for fileId=%s: %s",
                                 att.get("fileId"), e)
@@ -640,7 +640,7 @@ class MaxListener:
         fmt = max_elements_to_internal(elements) or None
         attaches = message.get("attaches", [])
 
-        log.info("MAX DM: chat=%s sender=%s (%s) msg=%s text=%r attaches=%s",
+        log.debug("MAX DM: chat=%s sender=%s (%s) msg=%s text=%r attaches=%s",
                  chat_id, sender_id, sender_name, msg_id,
                  (text or "")[:60],
                  [a.get("_type") for a in attaches])

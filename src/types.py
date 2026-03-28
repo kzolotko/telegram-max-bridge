@@ -42,6 +42,7 @@ class AdminBotConfig:
 class AppConfig:
     api_id: int  # Telegram API ID from my.telegram.org
     api_hash: str  # Telegram API hash
+    users: list['UserMapping'] = field(default_factory=list)  # top-level user registry
     bridges: list['BridgeEntry'] = field(default_factory=list)
     dm_bridge: 'DmBridgeConfig | None' = None
     admin_bot: 'AdminBotConfig | None' = None

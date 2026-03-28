@@ -15,9 +15,9 @@ class TelegramClientPool:
         self._clients: dict[int, Client] = {}  # tg_user_id -> Client
         self._user_ids: dict[str, int] = {}  # session_name -> tg_user_id
 
-    async def init(self, users: list[UserMapping]) -> list[int]:
-        """Initialize clients for all users. Returns list of TG user IDs."""
-        user_ids = []
+    async def init(self, users: list[UserMapping]) -> list[UserMapping]:
+        """Initialize clients for all users. Returns list of successfully started users."""
+        started = []
         for user in users:
             client = Client(
                 name=user.telegram_session,
@@ -25,13 +25,24 @@ class TelegramClientPool:
                 api_hash=self.config.api_hash,
                 workdir=self.config.sessions_dir,
             )
-            await client.start()
-            me = await client.get_me()
+            try:
+                await client.start()
+                me = await client.get_me()
+            except Exception as e:
+                log.warning(
+                    "Failed to start Telegram client for %s: %s — skipping user",
+                    user.name, e,
+                )
+                try:
+                    await client.stop()
+                except Exception:
+                    pass
+                continue
             self._clients[user.telegram_user_id] = client
             self._user_ids[user.telegram_session] = me.id
-            user_ids.append(me.id)
+            started.append(user)
             log.info("Started client for %s (@%s, ID: %d)", user.name, me.username, me.id)
-        return user_ids
+        return started
 
     def get_client(self, tg_user_id: int) -> Client | None:
         return self._clients.get(tg_user_id)

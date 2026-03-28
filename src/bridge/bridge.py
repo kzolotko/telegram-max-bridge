@@ -179,7 +179,7 @@ class Bridge:
                     tg_msg_id=int(event.source_msg_id),
                     max_chat_id=max_chat_id,
                 )
-                log.info("tg→max reaction: tg_msg=%s → max_msg=%s emoji=%r",
+                log.debug("tg→max reaction: tg_msg=%s → max_msg=%s emoji=%r",
                          event.source_msg_id, max_msg_id, event.reaction_emoji)
                 if max_msg_id:
                     self.mirrors.mark_max_reaction(max_msg_id, event.reaction_emoji)
@@ -224,7 +224,7 @@ class Bridge:
             text, fmt = prepend_sender_name_fmt(
                 event.sender_display_name, event.text or "", fmt,
             )
-            log.info("max→tg via primary=%s (max_sender_id=%s not matched in config) "
+            log.debug("max→tg via primary=%s (max_sender_id=%s not matched in config) "
                      "type=%s text=%r",
                      entry.user.name, event.sender_user_id, event.event_type, text[:50])
 

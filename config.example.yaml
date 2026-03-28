@@ -2,19 +2,44 @@
 #
 # Prerequisites:
 #   1. Set up credentials first:  ./bridge.sh setup credentials
-#   2. Then configure bridges:    ./bridge.sh setup bridges
+#   2. Then configure users:      ./bridge.sh setup users
+#   3. Then configure bridges:    ./bridge.sh setup bridges
 #   Or run full wizard:           ./bridge.sh setup
 #
 # Note: Telegram API credentials (api_id, api_hash) live in credentials.yaml
 
-# ─── Bridge entries ────────────────────────────────────────────────────────────
-# Each entry connects one Telegram chat ↔ one MAX chat via one user's accounts.
+# ─── User accounts ───────────────────────────────────────────────────────────
+# Each user needs a Telegram and MAX account with active sessions.
+# Sessions are stored in sessions/ (e.g. tg_alice.session, max_alice.max_session).
+#
+# HOW TO FIND IDs
+# ───────────────
+#   telegram_user_id  — message @userinfobot directly, it replies with your ID.
+#
+#   max_user_id       — shown in `./bridge.sh auth` output after MAX login,
+#                       or find viewerId in browser dev tools at web.max.ru.
+#
+# user.name must be alphanumeric (lowercase) — it is used to build session
+# filenames (e.g. tg_alice.session, max_alice.max_session).
+
+users:
+  - name: "alice"
+    telegram_user_id: 111111111
+    max_user_id: 205111111
+
+  - name: "bob"
+    telegram_user_id: 333333333
+    max_user_id: 205333333
+
+# ─── Bridge entries ──────────────────────────────────────────────────────────
+# Each bridge connects one Telegram chat ↔ one MAX chat.
+# The users list references users from the section above (first = primary).
 #
 # HOW MULTI-USER WORKS
 # ─────────────────────
-# When multiple users share the same chat pair, only the FIRST user listed
-# (the "primary") actively listens.  The bridge routes each message to the
-# correct sender's account on the other side:
+# When a bridge has multiple users, only the FIRST user (the "primary")
+# actively listens. The bridge routes each message to the correct sender's
+# account on the other side:
 #
 #   • Alice writes in TG → mirrors via Alice's MAX account (no prefix)
 #   • Bob writes in TG   → mirrors via Bob's MAX account   (no prefix)
@@ -23,58 +48,39 @@
 #
 # Every message is forwarded exactly once — no duplicates.
 #
-# HOW TO FIND IDs
-# ───────────────
+# HOW TO FIND CHAT IDs
+# ────────────────────
 #   telegram_chat_id  — forward any message from the group to @userinfobot;
 #                       it replies with the chat ID (negative number).
 #                       Supergroups start with -100, regular groups don't.
 #
 #   max_chat_id       — open the chat at https://web.max.ru, the ID is in
 #                       the URL: web.max.ru/#/chats/@chat/-72099589405396
-#
-#   telegram_user_id  — message @userinfobot directly, it replies with your ID.
-#
-#   max_user_id       — shown in `./bridge.sh auth` output after MAX login,
-#                       or find viewerId in browser dev tools at web.max.ru.
-#
-# user.name must be alphanumeric — it is used to build session filenames
-# (e.g. tg_alice.session, max_alice.max_session).
 
 bridges:
-  # ── Minimal: one chat, one user ──────────────────────────────────────────────
-  - name: "team-general"              # unique key (for logs & message store)
-    telegram_chat_id: -1001234567890  # Telegram group/supergroup ID
-    max_chat_id: -72099000000001      # MAX chat ID
-    user:
-      name: "alice"                   # alphanumeric, used in session filenames
-      telegram_user_id: 111111111     # numeric Telegram user ID
-      max_user_id: 205111111          # numeric MAX user ID
+  # ── Minimal: one chat, one user ────────────────────────────────────────────
+  - name: "team-general"
+    telegram_chat_id: -1001234567890
+    max_chat_id: -72099000000001
+    users: ["alice"]
 
-  # ── Same user, additional chat ───────────────────────────────────────────────
-  # Alice also bridges this second chat pair.
-  # Session files are reused — no extra authentication needed.
+  # ── Same user, additional chat ─────────────────────────────────────────────
   - name: "team-dev"
     telegram_chat_id: -1009876543210
     max_chat_id: -72099000000002
-    user:
-      name: "alice"
-      telegram_user_id: 111111111
-      max_user_id: 205111111
+    users: ["alice"]
 
-  # ── Second user for the same chat (authorship-preserving) ────────────────────
+  # ── Multi-user bridge (authorship-preserving) ──────────────────────────────
   # Alice is primary (listed first) — her accounts listen to the chat.
   # When Bob writes in TG, the bridge sends via Bob's MAX account directly
   # (no "[Bob]: " prefix — the message appears from Bob's name natively).
   # When someone not listed writes, it goes through Alice's account with prefix.
-  - name: "team-general"
+  - name: "team-general-multiuser"
     telegram_chat_id: -1001234567890
     max_chat_id: -72099000000001
-    user:
-      name: "bob"
-      telegram_user_id: 333333333
-      max_user_id: 205333333
+    users: ["alice", "bob"]
 
-# ─── Admin Bot (optional) ──────────────────────────────────────────────────────
+# ─── Admin Bot (optional) ────────────────────────────────────────────────────
 # A separate Telegram bot for remote bridge management: status, config,
 # pause/resume, auth, logs — all via Telegram commands.
 #
@@ -88,7 +94,7 @@ bridges:
 #   bot_token: "987654321:ZYXwvuTSRqpoNMLkjihGFEdcbaZYX"
 #   admin_ids: [111111111]  # Telegram user IDs allowed to use admin commands
 
-# ─── DM Bridge (optional) ──────────────────────────────────────────────────────
+# ─── DM Bridge (optional) ────────────────────────────────────────────────────
 # Forwards MAX direct messages to a Telegram bot for ALL users from bridges.
 # Reply to the bot message → the reply goes back to the MAX DM.
 #
@@ -96,7 +102,7 @@ bridges:
 #   1. Create a bot via @BotFather in Telegram, copy the token.
 #   2. Each user must start a chat with the bot (send /start).
 #   3. Uncomment the section below and paste the token.
-#   No other settings needed — users are taken from the bridges section above.
+#   No other settings needed — users are taken from the users section above.
 #
 # dm_bridge:
 #   bot_token: "123456789:ABCdefGHIjklMNOpqrsTUVwxyz"
