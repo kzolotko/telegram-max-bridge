@@ -7,6 +7,7 @@ from ..config import ConfigLookup
 from ..message_store import MessageStore
 from ..telegram.client_pool import TelegramClientPool
 from ..max.client_pool import MaxClientPool
+from ..bridge_state import BridgeState
 from ..types import BridgeEvent
 from .formatting import (
     MIRROR_MARKER,
@@ -28,14 +29,20 @@ class Bridge:
         tg_pool: TelegramClientPool,
         max_pool: MaxClientPool,
         mirror_tracker: MirrorTracker,
+        bridge_state: BridgeState | None = None,
     ):
         self.lookup = lookup
         self.store = message_store
         self.tg_pool = tg_pool
         self.max_pool = max_pool
         self.mirrors = mirror_tracker
+        self.state = bridge_state
 
     async def handle_event(self, event: BridgeEvent):
+        if self.state and not self.state.should_forward(event.bridge_entry.name):
+            log.debug("Paused, dropping %s event for %s",
+                      event.direction, event.bridge_entry.name)
+            return
         try:
             if event.direction == "tg-to-max":
                 await self._tg_to_max(event)

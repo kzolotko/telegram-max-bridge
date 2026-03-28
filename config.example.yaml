@@ -74,6 +74,20 @@ bridges:
       telegram_user_id: 333333333
       max_user_id: 205333333
 
+# ─── Admin Bot (optional) ──────────────────────────────────────────────────────
+# A separate Telegram bot for remote bridge management: status, config,
+# pause/resume, auth, logs — all via Telegram commands.
+#
+# SETUP:
+#   1. Create a SEPARATE bot via @BotFather (not the DM bridge bot).
+#   2. Copy the token below.
+#   3. Add your Telegram user ID to admin_ids.
+#   4. Start a chat with the bot and send /help.
+#
+# admin_bot:
+#   bot_token: "987654321:ZYXwvuTSRqpoNMLkjihGFEdcbaZYX"
+#   admin_ids: [111111111]  # Telegram user IDs allowed to use admin commands
+
 # ─── DM Bridge (optional) ──────────────────────────────────────────────────────
 # Forwards MAX direct messages to a Telegram bot for ALL users from bridges.
 # Reply to the bot message → the reply goes back to the MAX DM.

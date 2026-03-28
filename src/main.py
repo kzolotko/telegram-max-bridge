@@ -7,6 +7,7 @@ import asyncio
 import logging
 import os
 import signal
+import time
 
 from pyrogram import Client as PyrogramClient
 
@@ -14,17 +15,20 @@ from .config import load_config, ConfigLookup
 from .message_store import MessageStore
 from .bridge.mirror_tracker import MirrorTracker
 from .bridge.bridge import Bridge
+from .bridge_state import BridgeState
+from .log_buffer import LogRingBuffer
 from .telegram.client_pool import TelegramClientPool
 from .telegram.listener import TelegramListener
 from .max.client_pool import MaxClientPool
 from .max.listener import MaxListener
 from .dm_bridge import DmBridge
 from .dm_store import DmStore
+from .admin_bot import AdminBot
 
 log = logging.getLogger("bridge")
 
 
-def setup_logging():
+def setup_logging() -> LogRingBuffer:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
@@ -34,9 +38,19 @@ def setup_logging():
     logging.getLogger("websockets").setLevel(logging.WARNING)
     logging.getLogger("pymax").setLevel(logging.WARNING)
 
+    log_buffer = LogRingBuffer(capacity=200)
+    log_buffer.setLevel(logging.INFO)
+    log_buffer.setFormatter(logging.Formatter(
+        "%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+        datefmt="%H:%M:%S",
+    ))
+    logging.getLogger("bridge").addHandler(log_buffer)
+    return log_buffer
+
 
 async def main():
-    setup_logging()
+    log_buffer = setup_logging()
+    start_time = time.monotonic()
 
     log.info("Loading configuration...")
     config = load_config()
@@ -48,6 +62,7 @@ async def main():
     message_store.start()
 
     mirror_tracker = MirrorTracker()
+    bridge_state = BridgeState()
 
     log.info("Initializing Telegram user accounts...")
     tg_pool = TelegramClientPool(config)
@@ -57,7 +72,7 @@ async def main():
     max_pool = MaxClientPool(config)
     await max_pool.init(users)
 
-    bridge = Bridge(lookup, message_store, tg_pool, max_pool, mirror_tracker)
+    bridge = Bridge(lookup, message_store, tg_pool, max_pool, mirror_tracker, bridge_state)
 
     # Warm up Pyrogram peer cache for configured chats only.
     # Previously we iterated ALL dialogs (~20s); now we resolve only the
@@ -147,6 +162,21 @@ async def main():
         dm_names = ", ".join(u.name for u in users)
         log.info("DM bridge: enabled for %s (MAX DMs → TG bot)", dm_names)
 
+    # ── Optional admin bot ──────────────────────────────────────────────────
+    admin_bot = None
+    if config.admin_bot:
+        log.info("Initializing admin bot...")
+        admin_bot = AdminBot(
+            config=config,
+            bridge_state=bridge_state,
+            tg_pool=tg_pool,
+            max_pool=max_pool,
+            tg_listeners=tg_listeners,
+            max_listeners=max_listeners,
+            log_buffer=log_buffer,
+            start_time=start_time,
+        )
+
     shutdown_event = asyncio.Event()
 
     def _shutdown():
@@ -156,6 +186,10 @@ async def main():
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, _shutdown)
+
+    if admin_bot:
+        await admin_bot.start(shutdown_event=shutdown_event)
+        log.info("Admin bot: enabled")
 
     # Periodic health check — log connection status every 5 minutes
     async def _health_loop():
@@ -185,6 +219,8 @@ async def main():
     except asyncio.CancelledError:
         pass
 
+    if admin_bot:
+        await admin_bot.stop()
     if dm_bridge:
         await dm_bridge.stop()
         dm_store.stop()

@@ -3,7 +3,7 @@ from pathlib import Path
 
 import yaml
 
-from .types import AppConfig, BridgeEntry, DmBridgeConfig, UserMapping
+from .types import AdminBotConfig, AppConfig, BridgeEntry, DmBridgeConfig, UserMapping
 
 
 def load_credentials(credentials_path: str | None = None) -> dict:
@@ -118,11 +118,25 @@ def load_config(
             raise ValueError("dm_bridge.bot_token is required")
         dm_bridge_cfg = DmBridgeConfig(bot_token=str(bot_token))
 
+    # ── Optional admin bot ────────────────────────────────────────────────────
+    admin_bot_cfg = None
+    admin_raw = raw.get("admin_bot")
+    if admin_raw:
+        bot_token = admin_raw.get("bot_token")
+        if not bot_token:
+            raise ValueError("admin_bot.bot_token is required")
+        raw_ids = admin_raw.get("admin_ids", [])
+        if not raw_ids:
+            raise ValueError("admin_bot.admin_ids must contain at least one user ID")
+        admin_ids = [int(uid) for uid in raw_ids]
+        admin_bot_cfg = AdminBotConfig(bot_token=str(bot_token), admin_ids=admin_ids)
+
     return AppConfig(
         api_id=creds["api_id"],
         api_hash=creds["api_hash"],
         bridges=bridges,
         dm_bridge=dm_bridge_cfg,
+        admin_bot=admin_bot_cfg,
     )
 
 
