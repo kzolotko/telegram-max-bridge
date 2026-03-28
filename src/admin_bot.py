@@ -1367,8 +1367,8 @@ class AdminBot:
             try:
                 await tg_client.sign_in(phone, phone_code_hash, text.strip())
             except Exception as e:
-                # Could be 2FA
-                if "Two-step" in str(e) or "PASSWORD_HASH_INVALID" in str(e):
+                err = str(e)
+                if "SESSION_PASSWORD_NEEDED" in err or "Two-step" in err or "PASSWORD_HASH_INVALID" in err:
                     conv.step = "2fa"
                     await message.reply_text("2FA is enabled. Enter your password:")
                     return
