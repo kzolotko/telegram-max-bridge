@@ -52,10 +52,9 @@ class MaxListener:
         # Set of all known group/channel chat IDs (for DM detection)
         self._known_group_ids: set[int] = set()
 
-        # Pre-populate name cache with known bridge users.
-        for entry in config.bridges:
-            u = entry.user
-            self._name_cache[u.max_user_id] = u.name
+        # Note: name cache is populated at runtime from MAX (preload + on-demand).
+        # Config user names (e.g. "mary") are NOT cached here — we prefer
+        # real display names (first + last) from the MAX profile.
 
     async def start(self) -> int:
         session = MaxSession(self.user.max_session, self.config.sessions_dir)
@@ -220,7 +219,7 @@ class MaxListener:
                 for member in members:
                     c = member.contact
                     if c and c.id and c.id not in self._name_cache:
-                        name = self._extract_name_from_names(c.names) if c.names else None
+                        name = self._extract_name(c)
                         if name:
                             self._name_cache[c.id] = name
                 log.info("Pre-loaded %d member names for MAX chat %s",
@@ -252,7 +251,18 @@ class MaxListener:
                 timeout=5.0,
             )
             if users:
-                name = self._extract_name(users[0])
+                u0 = users[0]
+                log.debug(
+                    "MAX user %s fields: names=%s display_name=%s "
+                    "first_name=%s username=%s login=%s",
+                    sender_id,
+                    getattr(u0, 'names', None),
+                    getattr(u0, 'display_name', None),
+                    getattr(u0, 'first_name', None),
+                    getattr(u0, 'username', None),
+                    getattr(u0, 'login', None),
+                )
+                name = self._extract_name(u0)
                 if name:
                     self._name_cache[sender_id] = name
                     log.debug("Resolved MAX user %s → %s (network)", sender_id, name)
@@ -271,6 +281,16 @@ class MaxListener:
         try:
             u = self.client.inner.get_cached_user(sender_id)
             if u is not None:
+                log.debug(
+                    "PyMax cached user %s: names=%s display_name=%s "
+                    "first_name=%s username=%s login=%s",
+                    sender_id,
+                    getattr(u, 'names', None),
+                    getattr(u, 'display_name', None),
+                    getattr(u, 'first_name', None),
+                    getattr(u, 'username', None),
+                    getattr(u, 'login', None),
+                )
                 return self._extract_name(u)
 
             for contact in self.client.inner.contacts:
@@ -282,8 +302,36 @@ class MaxListener:
 
     @staticmethod
     def _extract_name_from_names(names) -> str | None:
+        """Extract best display name from a list of Name objects.
+
+        Priority: ONEME with first+last > ONEME first only > any other entry.
+        """
         if not names:
             return None
+
+        # Pass 1: prefer ONEME (profile) entries with both first+last name
+        for n in names:
+            ntype = getattr(n, 'type', None)
+            if ntype and ntype != 'ONEME':
+                continue
+            first = getattr(n, 'first_name', None) or ''
+            last = getattr(n, 'last_name', None) or ''
+            if first and last:
+                return f"{first} {last}"
+
+        # Pass 2: ONEME with first name only
+        for n in names:
+            ntype = getattr(n, 'type', None)
+            if ntype and ntype != 'ONEME':
+                continue
+            first = getattr(n, 'first_name', None) or ''
+            if first:
+                return first
+            fallback = getattr(n, 'name', None)
+            if fallback:
+                return fallback
+
+        # Pass 3: any entry (CUSTOM, etc.)
         for n in names:
             first = getattr(n, 'first_name', None) or ''
             last = getattr(n, 'last_name', None) or ''
@@ -297,14 +345,22 @@ class MaxListener:
 
     @staticmethod
     def _extract_name(u) -> str | None:
+        # 1. names array — first_name + last_name (highest priority)
         if hasattr(u, 'names') and u.names:
             name = MaxListener._extract_name_from_names(u.names)
             if name:
                 return name
+        # 2. display_name, but only if it differs from username/login
+        username = getattr(u, 'username', None) or getattr(u, 'login', None)
         if hasattr(u, 'display_name') and u.display_name:
-            return u.display_name
+            if not username or u.display_name != username:
+                return u.display_name
+        # 3. first_name
         if hasattr(u, 'first_name') and u.first_name:
             return u.first_name
+        # 4. username as last resort
+        if username:
+            return username
         return None
 
     # ── Routing guard ─────────────────────────────────────────────────────────
