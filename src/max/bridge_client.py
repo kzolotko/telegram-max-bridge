@@ -68,6 +68,11 @@ class BridgeMaxClient:
         # Start ping and background tasks
         await self._inner._post_login_tasks(sync=False)
 
+        # Give the MAX server a moment to transition the session to ONLINE state
+        # before the first send.  Without this, the first operation after a
+        # reconnect can fail with "Must be ONLINE session" [proto.state].
+        await asyncio.sleep(1.0)
+
         log.info("Connected and logged in via native protocol (device_id=%s)", self._device_id)
         return {}
 
@@ -306,6 +311,16 @@ class BridgeMaxClient:
                 await self._inner._cleanup_client()
             except Exception:
                 pass
+            # Explicitly close the underlying socket so that any executor threads
+            # still blocked in recv()/send() unblock immediately.  Without this,
+            # the thread holds the FD open and the MAX server may reject the new
+            # connection (same device_id) before the old socket has timed out.
+            sock = getattr(self._inner, '_socket', None)
+            if sock is not None:
+                try:
+                    sock.close()
+                except Exception:
+                    pass
             try:
                 await self._inner.close()
             except Exception:

@@ -1,6 +1,7 @@
 import asyncio
 import logging
 
+from pymax.exceptions import SocketNotConnectedError, SocketSendError
 from pymax.files import File as PyMaxFile
 
 from .bridge_client import BridgeMaxClient
@@ -17,7 +18,12 @@ from .media import (
 log = logging.getLogger("bridge.max.pool")
 
 # Number of automatic retry attempts after reconnecting on send failure.
-_MAX_RETRIES = 1
+_MAX_RETRIES = 2
+
+# Only these exception types indicate a broken connection worth reconnecting.
+# Server-side errors (rate limits, session state, etc.) are NOT connection
+# problems — reconnecting on those just causes cascading failures.
+_CONNECTION_ERRORS = (SocketNotConnectedError, SocketSendError)
 _RECONNECT_DELAY = 1          # seconds before first reconnect attempt
 _RECONNECT_MAX_DELAY = 120    # cap for exponential backoff
 
@@ -97,8 +103,16 @@ class MaxClientPool:
 
     # ── Reconnection ──────────────────────────────────────────────────────────
 
-    async def _reconnect(self, max_user_id: int) -> BridgeMaxClient | None:
-        """Reconnect a specific pool client. Returns new client or None."""
+    async def _reconnect(
+        self, max_user_id: int, dead_client: "BridgeMaxClient | None" = None
+    ) -> "BridgeMaxClient | None":
+        """Reconnect a specific pool client. Returns new client or None.
+
+        *dead_client* is the specific client instance we know is dead (from a
+        failed ping).  If provided, the early-exit guard compares by identity so
+        that a concurrently reconnected (new) client is returned as-is, while
+        the known-dead client always triggers a fresh reconnect.
+        """
         creds = self._credentials.get(max_user_id)
         if not creds:
             log.error("No credentials for MAX user %s — cannot reconnect", max_user_id)
@@ -106,9 +120,9 @@ class MaxClientPool:
 
         lock = self._reconnect_locks[max_user_id]
         async with lock:
-            # Check if another coroutine already reconnected while we waited
+            # Check if another coroutine already reconnected while we waited.
             existing = self._clients.get(max_user_id)
-            if existing and existing.is_connected:
+            if existing is not None and existing is not dead_client and existing.is_connected:
                 return existing
 
             token, device_id = creds
@@ -154,19 +168,17 @@ class MaxClientPool:
         return None
 
     async def _get_live_client(self, max_user_id: int) -> BridgeMaxClient | None:
-        """Get a connected client, reconnecting if necessary.
+        """Get the current pool client, reconnecting if obviously disconnected.
 
-        Uses an active ping to verify the connection is truly alive
-        before returning it — ``is_connected`` alone is unreliable
-        because PyMax's recv_task can hang on dead sockets.
+        Does NOT ping — the overhead of a 5 s ping timeout on dead connections
+        is worse than letting the first send attempt fail fast and then
+        reconnecting in the retry loop.  The retry loop handles actual send
+        errors correctly now that _reconnect() tracks the dead client identity.
         """
         client = self._clients.get(max_user_id)
-        if client and client.is_connected:
-            if await client.ping(timeout=5.0):
-                return client
-            log.info("Pool client %s failed ping — reconnecting", max_user_id)
-        # Connection dead — try to reconnect
-        return await self._reconnect(max_user_id)
+        if client is None or not client.is_connected:
+            return await self._reconnect(max_user_id, dead_client=client)
+        return client
 
     # ── Message ID extraction ─────────────────────────────────────────────────
 
@@ -215,16 +227,17 @@ class MaxClientPool:
                     elements=elements,
                 )
                 return self._extract_msg_id(response)
-            except Exception as e:
+            except _CONNECTION_ERRORS as e:
                 if attempt < _MAX_RETRIES:
                     log.warning("send_text failed (attempt %d): %s — will reconnect and retry",
                                 attempt + 1, e)
-                    # Force reconnect on next _get_live_client call
-                    self._clients[uid] = client  # keep ref for disconnect
-                    await self._reconnect(uid)
+                    await self._reconnect(uid, dead_client=client)
                 else:
                     log.error("send_text failed after %d attempts: %s", attempt + 1, e)
                     return None
+            except Exception as e:
+                log.warning("send_text: non-retryable error: %s", e)
+                return None
 
     async def edit_text(
         self,
@@ -251,13 +264,16 @@ class MaxClientPool:
                     elements=elements,
                 )
                 return
-            except Exception as e:
+            except _CONNECTION_ERRORS as e:
                 if attempt < _MAX_RETRIES:
                     log.warning("edit_text failed (attempt %d): %s — will reconnect and retry",
                                 attempt + 1, e)
-                    await self._reconnect(uid)
+                    await self._reconnect(uid, dead_client=client)
                 else:
                     log.error("edit_text failed after %d attempts: %s", attempt + 1, e)
+            except Exception as e:
+                log.warning("edit_text: non-retryable error: %s", e)
+                return
 
     async def delete_msg(
         self,
@@ -280,13 +296,16 @@ class MaxClientPool:
                     message_ids=[int(message_id)],
                 )
                 return
-            except Exception as e:
+            except _CONNECTION_ERRORS as e:
                 if attempt < _MAX_RETRIES:
                     log.warning("delete_msg failed (attempt %d): %s — will reconnect and retry",
                                 attempt + 1, e)
-                    await self._reconnect(uid)
+                    await self._reconnect(uid, dead_client=client)
                 else:
                     log.error("delete_msg failed after %d attempts: %s", attempt + 1, e)
+            except Exception as e:
+                log.warning("delete_msg: non-retryable error: %s", e)
+                return
 
     async def send_photo(
         self,
@@ -311,14 +330,17 @@ class MaxClientPool:
                 photo_token = await upload_photo_to_url(upload_url, photo_data, filename)
                 response = await send_photo_message(client, chat_id, photo_token, caption, reply_to)
                 return self._extract_msg_id(response)
-            except Exception as e:
+            except _CONNECTION_ERRORS as e:
                 if attempt < _MAX_RETRIES:
                     log.warning("send_photo failed (attempt %d): %s — will reconnect and retry",
                                 attempt + 1, e)
-                    await self._reconnect(uid)
+                    await self._reconnect(uid, dead_client=client)
                 else:
                     log.error("send_photo failed after %d attempts: %s", attempt + 1, e)
                     return None
+            except Exception as e:
+                log.warning("send_photo: non-retryable error: %s", e)
+                return None
 
     async def _upload_file_with_fallback(
         self, client: BridgeMaxClient, file_data: bytes,
@@ -365,22 +387,28 @@ class MaxClientPool:
         if uid is None:
             return None
 
-        # No retry loop — _upload_file_with_fallback already has an internal
-        # fallback (pymax → HTTP), so retrying at this level would just double
-        # the 20 s pymax timeout.
-        client = await self._get_live_client(uid)
-        if not client:
-            log.error("send_file: no live client for user %s", uid)
-            return None
-        try:
-            file_info = await self._upload_file_with_fallback(
-                client, file_data, filename, content_type,
-            )
-            response = await send_file_message(client, chat_id, file_info, caption, reply_to)
-            return self._extract_msg_id(response)
-        except Exception as e:
-            log.error("send_file failed: %s", e)
-            return None
+        for attempt in range(_MAX_RETRIES + 1):
+            client = await self._get_live_client(uid)
+            if not client:
+                log.error("send_file: no live client for user %s", uid)
+                return None
+            try:
+                file_info = await self._upload_file_with_fallback(
+                    client, file_data, filename, content_type,
+                )
+                response = await send_file_message(client, chat_id, file_info, caption, reply_to)
+                return self._extract_msg_id(response)
+            except _CONNECTION_ERRORS as e:
+                if attempt < _MAX_RETRIES:
+                    log.warning("send_file failed (attempt %d): %s — will reconnect and retry",
+                                attempt + 1, e)
+                    await self._reconnect(uid, dead_client=client)
+                else:
+                    log.error("send_file failed after %d attempts: %s", attempt + 1, e)
+                    return None
+            except Exception as e:
+                log.warning("send_file: non-retryable error: %s", e)
+                return None
 
     async def react(
         self,
@@ -444,14 +472,17 @@ class MaxClientPool:
                     client, chat_id, attaches, caption, elements, reply_to
                 )
                 return self._extract_msg_id(response)
-            except Exception as e:
+            except _CONNECTION_ERRORS as e:
                 if attempt < _MAX_RETRIES:
                     log.warning("send_media_multi failed (attempt %d): %s — reconnecting",
                                 attempt + 1, e)
-                    await self._reconnect(uid)
+                    await self._reconnect(uid, dead_client=client)
                 else:
                     log.error("send_media_multi failed after %d attempts: %s", attempt + 1, e)
                     return None
+            except Exception as e:
+                log.warning("send_media_multi: non-retryable error: %s", e)
+                return None
 
     async def reconnect_dead_clients(self) -> None:
         """Proactively reconnect any pool clients that have lost their connection.
@@ -473,7 +504,7 @@ class MaxClientPool:
                 continue
             log.info("Proactive reconnect: pool client %s is dead, reconnecting...", uid)
             try:
-                await self._reconnect(uid)
+                await self._reconnect(uid, dead_client=client)
             except Exception as e:
                 log.error("Proactive reconnect failed for pool client %s: %s", uid, e)
 

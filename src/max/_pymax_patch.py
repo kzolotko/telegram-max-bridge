@@ -26,6 +26,8 @@ own packet parser with the same fix already applied directly in source.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from typing import Any
 
 import lz4.block
@@ -89,7 +91,51 @@ def _fixed_unpack_packet(self, data: bytes) -> dict[str, Any] | None:  # noqa: A
     }
 
 
-# ── Apply patch ───────────────────────────────────────────────────────────────
+# ── Patch 2: SocketMixin.connect — cancel orphaned tasks before reconnecting ──
+#
+# When _send_and_wait() catches an SSL/Connection error, it calls
+# self.connect() internally to create a new socket.  connect() creates fresh
+# _recv_task and _outgoing_task but NEVER cancels the old ones.  The old
+# outgoing_task then races with the new one reading from the same
+# self._outgoing queue, and both call sendall() concurrently on the new
+# socket, corrupting the protocol stream.  This patch cancels the old tasks
+# and closes the old socket before connect() creates new ones.
+
+_original_connect = SocketMixin.connect
+
+
+async def _patched_connect(self, user_agent=None):  # noqa: ANN001
+    """Patched connect() that cancels orphaned recv/outgoing tasks first."""
+    old_recv = getattr(self, '_recv_task', None)
+    old_out = getattr(self, '_outgoing_task', None)
+    old_socket = getattr(self, '_socket', None)
+
+    # Close old socket first so executor threads blocked in recv()/send()
+    # unblock immediately and can honour the upcoming task cancellations.
+    if old_socket is not None:
+        with contextlib.suppress(Exception):
+            old_socket.close()
+
+    # Cancel orphaned tasks.
+    for task in (old_recv, old_out):
+        if task is not None and not task.done():
+            task.cancel()
+
+    # Wait briefly for cancellation to propagate (socket close should make
+    # executor threads return quickly).
+    for task in (old_recv, old_out):
+        if task is not None and not task.done():
+            with contextlib.suppress(asyncio.CancelledError, asyncio.TimeoutError, Exception):
+                await asyncio.wait_for(asyncio.shield(task), timeout=0.5)
+
+    return await _original_connect(self, user_agent)
+
+
+if SocketMixin.connect is not _patched_connect:
+    SocketMixin.connect = _patched_connect  # type: ignore[method-assign]
+
+
+# ── Apply patch 1 ─────────────────────────────────────────────────────────────
 
 _original = SocketMixin._unpack_packet
 
