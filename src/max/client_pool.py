@@ -18,7 +18,7 @@ log = logging.getLogger("bridge.max.pool")
 
 # Number of automatic retry attempts after reconnecting on send failure.
 _MAX_RETRIES = 1
-_RECONNECT_DELAY = 5          # seconds before first reconnect attempt
+_RECONNECT_DELAY = 1          # seconds before first reconnect attempt
 _RECONNECT_MAX_DELAY = 120    # cap for exponential backoff
 
 
@@ -154,10 +154,17 @@ class MaxClientPool:
         return None
 
     async def _get_live_client(self, max_user_id: int) -> BridgeMaxClient | None:
-        """Get a connected client, reconnecting if necessary."""
+        """Get a connected client, reconnecting if necessary.
+
+        Uses an active ping to verify the connection is truly alive
+        before returning it — ``is_connected`` alone is unreliable
+        because PyMax's recv_task can hang on dead sockets.
+        """
         client = self._clients.get(max_user_id)
         if client and client.is_connected:
-            return client
+            if await client.ping(timeout=5.0):
+                return client
+            log.info("Pool client %s failed ping — reconnecting", max_user_id)
         # Connection dead — try to reconnect
         return await self._reconnect(max_user_id)
 
