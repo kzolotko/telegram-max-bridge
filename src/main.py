@@ -232,11 +232,16 @@ async def main(is_restart: bool = False):
                 break  # shutdown signalled
             except asyncio.TimeoutError:
                 pass
-            # Log MAX pool status
+            # Log MAX pool status and reconnect dead clients
             for uid in max_pool.get_all_user_ids():
                 client = max_pool.get_client(uid)
                 status = "connected" if (client and client.is_connected) else "DISCONNECTED"
                 log.info("Health: MAX pool user %s — %s", uid, status)
+            # Proactively reconnect any dead pool clients
+            try:
+                await max_pool.reconnect_dead_clients()
+            except Exception as e:
+                log.error("Health: pool reconnect sweep failed: %s", e)
             # Log MAX listener status
             for listener in max_listeners:
                 client = listener.client

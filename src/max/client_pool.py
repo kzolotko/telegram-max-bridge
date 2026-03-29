@@ -446,6 +446,23 @@ class MaxClientPool:
                     log.error("send_media_multi failed after %d attempts: %s", attempt + 1, e)
                     return None
 
+    async def reconnect_dead_clients(self) -> None:
+        """Proactively reconnect any pool clients that have lost their connection.
+
+        Called periodically from the health loop in main.py so that pool
+        clients don't stay dead forever when there is no outgoing traffic
+        to trigger the reactive reconnect path.
+        """
+        for uid in self._user_ids:
+            client = self._clients.get(uid)
+            if client and client.is_connected:
+                continue
+            log.info("Proactive reconnect: pool client %s is dead, reconnecting...", uid)
+            try:
+                await self._reconnect(uid)
+            except Exception as e:
+                log.error("Proactive reconnect failed for pool client %s: %s", uid, e)
+
     async def stop(self):
         for client in self._clients.values():
             try:
