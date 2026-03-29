@@ -205,7 +205,7 @@ async def main(is_restart: bool = False):
         await admin_bot.start(shutdown_event=shutdown_event)
         log.info("Admin bot: enabled")
         elapsed = time.monotonic() - start_time
-        bridge_count = len(config.bridges)
+        bridge_count = len({e.name for e in config.bridges})
         user_count = len(users)
         label = "Restarted" if is_restart else "Started"
         await admin_bot.notify_admins(
