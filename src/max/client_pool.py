@@ -23,7 +23,13 @@ _MAX_RETRIES = 2
 # Only these exception types indicate a broken connection worth reconnecting.
 # Server-side errors (rate limits, session state, etc.) are NOT connection
 # problems — reconnecting on those just causes cascading failures.
-_CONNECTION_ERRORS = (SocketNotConnectedError, SocketSendError)
+#
+# TimeoutError is included because a send that times out waiting for a response
+# almost always means a dead socket (half-open TCP connection where the server
+# stopped responding without sending FIN/RST).  Reconnecting and retrying is
+# the correct recovery; the alternative — returning None immediately — silently
+# drops the message.
+_CONNECTION_ERRORS = (SocketNotConnectedError, SocketSendError, TimeoutError)
 _RECONNECT_DELAY = 1          # seconds before first reconnect attempt
 _RECONNECT_MAX_DELAY = 120    # cap for exponential backoff
 

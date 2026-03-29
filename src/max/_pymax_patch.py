@@ -121,12 +121,12 @@ async def _patched_connect(self, user_agent=None):  # noqa: ANN001
         if task is not None and not task.done():
             task.cancel()
 
-    # Wait briefly for cancellation to propagate (socket close should make
-    # executor threads return quickly).
-    for task in (old_recv, old_out):
-        if task is not None and not task.done():
-            with contextlib.suppress(asyncio.CancelledError, asyncio.TimeoutError, Exception):
-                await asyncio.wait_for(asyncio.shield(task), timeout=0.5)
+    # Do NOT wait for cancellation to propagate.  Waiting up to 0.5 s creates
+    # a gap in which incoming packets can arrive at the TCP layer but neither
+    # the dying recv_task nor the not-yet-started new one processes them,
+    # causing the test harness's MaxTestClient to miss bridged messages.
+    # The socket close above is sufficient: executor threads unblock on their
+    # own and their CancelledError is handled asynchronously.
 
     return await _original_connect(self, user_agent)
 
