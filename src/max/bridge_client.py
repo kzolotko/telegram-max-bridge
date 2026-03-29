@@ -249,7 +249,15 @@ class BridgeMaxClient:
 
     @property
     def is_connected(self) -> bool:
-        return self._inner is not None and self._inner.is_connected
+        if self._inner is None or not self._inner.is_connected:
+            return False
+        # PyMax doesn't update is_connected when the socket dies —
+        # the recv_task silently finishes but nobody clears the flag.
+        # Check recv_task: if it's done, the socket is dead.
+        rt = self._inner._recv_task
+        if rt is not None and rt.done():
+            return False
+        return True
 
     @property
     def recv_task(self) -> asyncio.Task | None:
