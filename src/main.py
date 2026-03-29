@@ -228,7 +228,7 @@ async def main(is_restart: bool = False):
         _write_heartbeat()  # initial heartbeat on startup
         while not shutdown_event.is_set():
             try:
-                await asyncio.wait_for(shutdown_event.wait(), timeout=300)
+                await asyncio.wait_for(shutdown_event.wait(), timeout=120)
                 break  # shutdown signalled
             except asyncio.TimeoutError:
                 pass

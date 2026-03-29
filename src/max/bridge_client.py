@@ -257,7 +257,37 @@ class BridgeMaxClient:
         rt = self._inner._recv_task
         if rt is not None and rt.done():
             return False
+        # Check underlying socket health — fileno() returns -1 when closed.
+        sock = getattr(self._inner, '_socket', None)
+        if sock is not None:
+            try:
+                if sock.fileno() == -1:
+                    return False
+            except Exception:
+                return False
         return True
+
+    async def ping(self, timeout: float = 5.0) -> bool:
+        """Send a PING to the MAX server and wait for a response.
+
+        Returns True if the server responded within *timeout* seconds,
+        False otherwise.  This is the only reliable way to detect dead
+        connections — ``is_connected`` can still return True when the
+        socket is half-dead (recv blocked in executor, send fails).
+        """
+        if not self.is_connected:
+            return False
+        try:
+            await asyncio.wait_for(
+                self._inner._send_and_wait(
+                    opcode=Opcode(3),  # PING
+                    payload={},
+                ),
+                timeout=timeout,
+            )
+            return True
+        except Exception:
+            return False
 
     @property
     def recv_task(self) -> asyncio.Task | None:

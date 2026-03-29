@@ -449,13 +449,20 @@ class MaxClientPool:
     async def reconnect_dead_clients(self) -> None:
         """Proactively reconnect any pool clients that have lost their connection.
 
-        Called periodically from the health loop in main.py so that pool
-        clients don't stay dead forever when there is no outgoing traffic
-        to trigger the reactive reconnect path.
+        Called periodically from the health loop in main.py.  Uses an active
+        ping check instead of relying on ``is_connected`` which can return
+        True even when the socket is half-dead (recv blocked in executor,
+        send already failing).
         """
         for uid in self._user_ids:
             client = self._clients.get(uid)
-            if client and client.is_connected:
+            if not client:
+                alive = False
+            elif not client.is_connected:
+                alive = False
+            else:
+                alive = await client.ping(timeout=5.0)
+            if alive:
                 continue
             log.info("Proactive reconnect: pool client %s is dead, reconnecting...", uid)
             try:
