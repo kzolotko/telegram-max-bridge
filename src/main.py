@@ -164,6 +164,8 @@ async def main(is_restart: bool = False):
         listener = MaxListener(config, lookup, mirror_tracker, bridge.handle_event, user, on_dm=on_dm)
         await listener.start()
         max_listeners.append(listener)
+        # Pool borrows the listener's client for sending (single connection per user).
+        max_pool.set_listener(user.max_user_id, listener)
 
     log.info("Bridge is active:")
     for entry in config.bridges:
@@ -232,21 +234,11 @@ async def main(is_restart: bool = False):
                 break  # shutdown signalled
             except asyncio.TimeoutError:
                 pass
-            # Log MAX pool status and reconnect dead clients
-            for uid in max_pool.get_all_user_ids():
-                client = max_pool.get_client(uid)
-                status = "connected" if (client and client.is_connected) else "DISCONNECTED"
-                log.info("Health: MAX pool user %s — %s", uid, status)
-            # Proactively reconnect any dead pool clients
-            try:
-                await max_pool.reconnect_dead_clients()
-            except Exception as e:
-                log.error("Health: pool reconnect sweep failed: %s", e)
-            # Log MAX listener status
+            # Log MAX connection status (one connection per user, owned by listener)
             for listener in max_listeners:
                 client = listener.client
                 status = "connected" if (client and client.is_connected) else "DISCONNECTED"
-                log.info("Health: MAX listener %s — %s", listener.user.name, status)
+                log.info("Health: MAX %s — %s", listener.user.name, status)
             _write_heartbeat()
 
     health_task = asyncio.create_task(_health_loop())
