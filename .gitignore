@@ -4,6 +4,7 @@ __pycache__/
 .venv/
 venv/
 config.yaml
+config/
 credentials.yaml
 sessions/
 *.session

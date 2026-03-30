@@ -5,6 +5,7 @@
 # Secrets — never bake these into the image
 credentials.yaml
 config.yaml
+config/
 sessions/
 *.session
 *.max_session
