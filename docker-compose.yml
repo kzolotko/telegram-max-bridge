@@ -14,8 +14,7 @@ services:
       - no-new-privileges:true
 
     volumes:
-      - ./config/credentials.yaml:/app/credentials.yaml
-      - ./config/config.yaml:/app/config.yaml
+      - ./config:/app/config
       - ./sessions:/app/sessions
 
     healthcheck:
