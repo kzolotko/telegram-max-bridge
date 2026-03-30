@@ -3,9 +3,9 @@
 .gitignore
 
 # Secrets — never bake these into the image
-credentials.yaml
-config.yaml
-config/
+config/config.yaml
+config/credentials.yaml
+config/e2e_config.yaml
 sessions/
 *.session
 *.max_session
@@ -34,7 +34,6 @@ Thumbs.db
 # Docs & scripts (not needed in container)
 README.md
 TASKS.md
-*.example.yaml
 bridge.sh
 
 # Tests (not needed in container)

@@ -6,7 +6,7 @@
 #   3. Then configure bridges:    ./bridge.sh setup bridges
 #   Or run full wizard:           ./bridge.sh setup
 #
-# Note: Telegram API credentials (api_id, api_hash) live in credentials.yaml
+# Note: API credentials, bot tokens, and admin settings live in credentials.yaml
 
 # ─── User accounts ───────────────────────────────────────────────────────────
 # Each user needs a Telegram and MAX account with active sessions.
@@ -79,30 +79,3 @@ bridges:
     telegram_chat_id: -1001234567890
     max_chat_id: -72099000000001
     users: ["alice", "bob"]
-
-# ─── Admin Bot (optional) ────────────────────────────────────────────────────
-# A separate Telegram bot for remote bridge management: status, config,
-# pause/resume, auth, logs — all via Telegram commands.
-#
-# SETUP:
-#   1. Create a SEPARATE bot via @BotFather (not the DM bridge bot).
-#   2. Copy the token below.
-#   3. Add your Telegram user ID to admin_ids.
-#   4. Start a chat with the bot and send /help.
-#
-# admin_bot:
-#   bot_token: "987654321:ZYXwvuTSRqpoNMLkjihGFEdcbaZYX"
-#   admin_ids: [111111111]  # Telegram user IDs allowed to use admin commands
-
-# ─── DM Bridge (optional) ────────────────────────────────────────────────────
-# Forwards MAX direct messages to a Telegram bot for ALL users from bridges.
-# Reply to the bot message → the reply goes back to the MAX DM.
-#
-# SETUP:
-#   1. Create a bot via @BotFather in Telegram, copy the token.
-#   2. Each user must start a chat with the bot (send /start).
-#   3. Uncomment the section below and paste the token.
-#   No other settings needed — users are taken from the users section above.
-#
-# dm_bridge:
-#   bot_token: "123456789:ABCdefGHIjklMNOpqrsTUVwxyz"

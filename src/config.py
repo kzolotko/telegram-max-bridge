@@ -11,7 +11,7 @@ _log = logging.getLogger("bridge.config")
 
 def load_credentials(credentials_path: str | None = None) -> dict:
     """Load Telegram API credentials from credentials.yaml."""
-    path = Path(credentials_path or "credentials.yaml")
+    path = Path(credentials_path or "config/credentials.yaml")
     if not path.exists():
         raise FileNotFoundError(
             f"Credentials file not found: {path}\n"
@@ -27,7 +27,17 @@ def load_credentials(credentials_path: str | None = None) -> dict:
     if not raw.get("api_hash"):
         raise ValueError("Missing api_hash in credentials.yaml")
 
-    return {"api_id": int(raw["api_id"]), "api_hash": str(raw["api_hash"])}
+    creds = {"api_id": int(raw["api_id"]), "api_hash": str(raw["api_hash"])}
+
+    # Optional bot tokens and admin settings
+    if raw.get("dm_bot_token"):
+        creds["dm_bot_token"] = str(raw["dm_bot_token"])
+    if raw.get("admin_bot_token"):
+        creds["admin_bot_token"] = str(raw["admin_bot_token"])
+    if raw.get("admin_ids"):
+        creds["admin_ids"] = [int(uid) for uid in raw["admin_ids"]]
+
+    return creds
 
 
 def _is_new_format(raw: dict) -> bool:
@@ -35,27 +45,34 @@ def _is_new_format(raw: dict) -> bool:
     return isinstance(raw.get("users"), list) and len(raw.get("users", [])) > 0
 
 
-def _parse_optional_sections(raw: dict) -> tuple['DmBridgeConfig | None', 'AdminBotConfig | None']:
-    """Parse dm_bridge and admin_bot sections (shared between old and new format)."""
+def _parse_optional_sections(raw: dict, creds: dict) -> tuple['DmBridgeConfig | None', 'AdminBotConfig | None']:
+    """Parse dm_bridge and admin_bot from credentials (primary) or config (fallback)."""
+    # ── DM bridge ───────────────────────────────────────────────────────────
     dm_bridge_cfg = None
-    dm_raw = raw.get("dm_bridge")
-    if dm_raw:
-        bot_token = dm_raw.get("bot_token")
-        if not bot_token:
-            raise ValueError("dm_bridge.bot_token is required")
-        dm_bridge_cfg = DmBridgeConfig(bot_token=str(bot_token))
+    dm_bot_token = creds.get("dm_bot_token")
+    if not dm_bot_token:
+        # Backward compat: read from config.yaml
+        dm_raw = raw.get("dm_bridge")
+        if dm_raw:
+            dm_bot_token = dm_raw.get("bot_token")
+    if dm_bot_token:
+        dm_bridge_cfg = DmBridgeConfig(bot_token=str(dm_bot_token))
 
+    # ── Admin bot ───────────────────────────────────────────────────────────
     admin_bot_cfg = None
-    admin_raw = raw.get("admin_bot")
-    if admin_raw:
-        bot_token = admin_raw.get("bot_token")
-        if not bot_token:
-            raise ValueError("admin_bot.bot_token is required")
-        raw_ids = admin_raw.get("admin_ids", [])
-        if not raw_ids:
-            raise ValueError("admin_bot.admin_ids must contain at least one user ID")
-        admin_ids = [int(uid) for uid in raw_ids]
-        admin_bot_cfg = AdminBotConfig(bot_token=str(bot_token), admin_ids=admin_ids)
+    admin_bot_token = creds.get("admin_bot_token")
+    admin_ids = creds.get("admin_ids")
+    if not admin_bot_token:
+        # Backward compat: read from config.yaml
+        admin_raw = raw.get("admin_bot")
+        if admin_raw:
+            admin_bot_token = admin_raw.get("bot_token")
+            if not admin_ids:
+                admin_ids = [int(uid) for uid in admin_raw.get("admin_ids", [])]
+    if admin_bot_token:
+        if not admin_ids:
+            raise ValueError("admin_ids must be set in credentials.yaml when admin_bot_token is provided")
+        admin_bot_cfg = AdminBotConfig(bot_token=str(admin_bot_token), admin_ids=admin_ids)
 
     return dm_bridge_cfg, admin_bot_cfg
 
@@ -123,7 +140,7 @@ def _load_new_format(raw: dict, creds: dict) -> AppConfig:
     if not bridges:
         raise ValueError("At least one bridge entry is required")
 
-    dm_bridge_cfg, admin_bot_cfg = _parse_optional_sections(raw)
+    dm_bridge_cfg, admin_bot_cfg = _parse_optional_sections(raw, creds)
 
     return AppConfig(
         api_id=creds["api_id"],
@@ -188,7 +205,7 @@ def _load_old_format(raw: dict, creds: dict) -> AppConfig:
     if not bridges:
         raise ValueError("At least one bridge entry is required")
 
-    dm_bridge_cfg, admin_bot_cfg = _parse_optional_sections(raw)
+    dm_bridge_cfg, admin_bot_cfg = _parse_optional_sections(raw, creds)
 
     return AppConfig(
         api_id=creds["api_id"],
@@ -210,7 +227,7 @@ def load_config(
       - New format: top-level ``users`` + ``bridges`` with user name references
       - Old format: inline ``user`` dict per bridge entry (backward compat)
     """
-    path = Path(config_path or "config.yaml")
+    path = Path(config_path or "config/config.yaml")
     if not path.exists():
         raise FileNotFoundError(f"Config file not found: {path}")
 
@@ -238,7 +255,7 @@ def load_config(
 
 # ── Migration ────────────────────────────────────────────────────────────────
 
-def migrate_config(config_path: str = "config.yaml") -> bool:
+def migrate_config(config_path: str = "config/config.yaml") -> bool:
     """Convert old-format config.yaml to new format.
 
     Returns True if migration was performed, False if already new format.

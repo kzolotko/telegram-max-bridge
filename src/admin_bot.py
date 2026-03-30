@@ -28,7 +28,7 @@ from .types import AppConfig
 
 log = logging.getLogger("bridge.admin")
 
-CONFIG_FILE = "config.yaml"
+CONFIG_FILE = "config/config.yaml"
 
 
 @dataclass

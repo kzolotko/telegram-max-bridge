@@ -3,9 +3,9 @@ __pycache__/
 *.pyo
 .venv/
 venv/
-config.yaml
-config/
-credentials.yaml
+config/config.yaml
+config/credentials.yaml
+config/e2e_config.yaml
 sessions/
 *.session
 *.max_session
@@ -13,4 +13,3 @@ sessions/
 .DS_Store
 .env
 .claude/
-tests/e2e/e2e_config.yaml

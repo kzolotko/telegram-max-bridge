@@ -32,8 +32,8 @@ from .config import load_credentials, migrate_config
 
 SEP = "─" * 60
 
-CREDENTIALS_FILE = "credentials.yaml"
-CONFIG_FILE = "config.yaml"
+CREDENTIALS_FILE = "config/credentials.yaml"
+CONFIG_FILE = "config/config.yaml"
 SESSIONS_DIR = "sessions"
 
 

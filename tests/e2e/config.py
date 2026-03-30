@@ -77,8 +77,8 @@ class E2EConfig:
 _DEFAULT_TEST_DEVICE_ID = "e2e00000-cafe-4000-a000-000000000001"
 _DEFAULT_TEST_DEVICE_ID_2 = "e2e00000-cafe-4000-a000-000000000002"
 
-_CONFIG_PATH = Path(__file__).resolve().parent / "e2e_config.yaml"
-_EXAMPLE_PATH = Path(__file__).resolve().parent / "e2e_config.example.yaml"
+_CONFIG_PATH = Path("config/e2e_config.yaml")
+_EXAMPLE_PATH = Path("config/e2e_config.example.yaml")
 
 
 def _load_user_creds(
