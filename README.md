@@ -50,7 +50,7 @@ Telegram-группа                        MAX-чат
 - `/restart` — перезапуск бриджа
 - `/config` — выгрузка текущего config.yaml
 
-Настройка: создать бота через @BotFather, добавить `admin_bot` секцию в `config.yaml`.
+Настройка: создать бота через @BotFather, добавить `admin_bot_token` и `admin_ids` в `config/credentials.yaml`.
 
 ### DM-бридж (личные сообщения)
 
@@ -71,7 +71,7 @@ TG бот → отправляет вам: "[Имя Фамилия]: текст"
 
 - Один бот обслуживает **всех** пользователей из `bridges`
 - Поддерживает: текст, фото, файлы, редактирование, удаление
-- Настройка: создать бота через @BotFather, добавить `dm_bridge.bot_token` в `config.yaml`
+- Настройка: создать бота через @BotFather, добавить `dm_bot_token` в `config/credentials.yaml`
 
 ---
 
@@ -104,7 +104,7 @@ pip install -r requirements.txt
 1. Ввод Telegram API credentials (получите на [my.telegram.org](https://my.telegram.org) → API development tools)
 2. Добавление пользователей: аутентификация TG (телефон + код) и MAX (телефон + SMS)
 3. Создание мостов: выбор TG-группы и MAX-чата из списка, назначение пользователей
-4. Запись `credentials.yaml` и `config.yaml`
+4. Запись `config/credentials.yaml` и `config/config.yaml`
 
 Доступны отдельные режимы:
 
@@ -128,12 +128,11 @@ pip install -r requirements.txt
 ```bash
 # 1. Создать бота через @BotFather в Telegram, скопировать токен
 # 2. Каждый пользователь отправляет боту /start
-# 3. Добавить в config.yaml:
+# 3. Добавить в config/credentials.yaml:
 ```
 
 ```yaml
-dm_bridge:
-  bot_token: "123456789:ABCdef..."
+dm_bot_token: "123456789:ABCdef..."
 ```
 
 Пользователи берутся автоматически из секции `users` — дополнительная настройка не нужна.
@@ -146,9 +145,10 @@ dm_bridge:
 
 ```
 telegram-max-bridge/
-├── credentials.yaml     # API credentials (не в репозитории)
-├── config.yaml          # конфигурация чатов (не в репозитории)
-├── sessions/            # файлы сессий + SQLite БД (создаются при авторизации)
+├── config/
+│   ├── credentials.yaml  # API credentials + bot tokens (не в репозитории)
+│   └── config.yaml       # конфигурация чатов (не в репозитории)
+├── sessions/             # файлы сессий + SQLite БД (создаются при авторизации)
 ├── docker-compose.yml
 └── Dockerfile
 ```
@@ -169,7 +169,7 @@ pip install -r requirements.txt
 
 > **Если Python нет на сервере** — настройте и авторизуйтесь локально, затем скопируйте файлы:
 > ```bash
-> scp credentials.yaml config.yaml user@server:/path/to/telegram-max-bridge/
+> scp -r config/ user@server:/path/to/telegram-max-bridge/
 > scp -r sessions/ user@server:/path/to/telegram-max-bridge/
 > ```
 
@@ -178,7 +178,7 @@ pip install -r requirements.txt
 ```bash
 ./bridge.sh docker up        # собрать образ и запустить в фоне
 ./bridge.sh docker down      # остановить
-./bridge.sh docker restart   # перезапуск (после изменения config.yaml)
+./bridge.sh docker restart   # перезапуск (после изменения конфига)
 ./bridge.sh docker logs      # логи в реальном времени
 ./bridge.sh docker status    # статус контейнера
 ./bridge.sh docker build     # только пересобрать образ
@@ -206,11 +206,10 @@ Docker Compose уже настроен для production:
 
 ### Что монтируется в контейнер
 
-| Путь на хосте         | Путь в контейнере        | Режим      |
-|-----------------------|--------------------------|------------|
-| `./credentials.yaml`  | `/app/credentials.yaml`  | read-only  |
-| `./config.yaml`       | `/app/config.yaml`       | read-only  |
-| `./sessions/`         | `/app/sessions/`         | read-write |
+| Путь на хосте | Путь в контейнере | Режим      |
+|---------------|-------------------|------------|
+| `./config/`   | `/app/config/`    | read-write |
+| `./sessions/` | `/app/sessions/`  | read-write |
 
 ### Бэкап сессий
 
@@ -261,11 +260,11 @@ Docker Compose уже настроен для production:
 3. Создайте приложение (название и описание — произвольные).
 4. Скопируйте **App api_id** (число) и **App api_hash** (строка из 32 символов).
 
-Создайте `credentials.yaml`:
+Создайте `config/credentials.yaml`:
 
 ```bash
-cp credentials.example.yaml credentials.yaml
-nano credentials.yaml
+cp config/credentials.example.yaml config/credentials.yaml
+nano config/credentials.yaml
 ```
 
 ```yaml
@@ -300,11 +299,11 @@ https://web.max.ru/#/chats/@chat/-72099589405396
                                   ↑ это и есть max_chat_id
 ```
 
-### Шаг 3: Заполнение config.yaml
+### Шаг 3: Заполнение config/config.yaml
 
 ```bash
-cp config.example.yaml config.yaml
-nano config.yaml
+cp config/config.example.yaml config/config.yaml
+nano config/config.yaml
 ```
 
 Минимальный конфиг (один чат, один пользователь):
@@ -322,7 +321,7 @@ bridges:
     users: ["alice"]
 ```
 
-> Подробные примеры (несколько чатов, несколько пользователей) — в `config.example.yaml`.
+> Подробные примеры (несколько чатов, несколько пользователей) — в `config/config.example.yaml`.
 
 ### Шаг 4: Запуск
 
@@ -337,7 +336,7 @@ bridges:
 ```
 src/
 ├── main.py              # Точка входа, инициализация, health check heartbeat
-├── config.py            # Загрузка credentials.yaml + config.yaml, ConfigLookup
+├── config.py            # Загрузка config/credentials.yaml + config/config.yaml, ConfigLookup
 ├── types.py             # Датаклассы: AppConfig, BridgeEntry, UserMapping, BridgeEvent, MediaInfo
 ├── auth.py              # Интерактивная авторизация аккаунтов (по конфигу)
 ├── setup.py             # Интерактивный мастер настройки (credentials + users + bridges)
@@ -429,8 +428,8 @@ pip install -r requirements-test.txt
 ./bridge.sh test-auth
 
 # 3. Создать конфиг тестов
-cp tests/e2e/e2e_config.example.yaml tests/e2e/e2e_config.yaml
-nano tests/e2e/e2e_config.yaml   # заполнить: user_name, tg_chat_id, max_chat_id
+cp config/e2e_config.example.yaml config/e2e_config.yaml
+nano config/e2e_config.yaml   # заполнить: user_name, tg_chat_id, max_chat_id
 ```
 
 ### Запуск
@@ -468,9 +467,9 @@ rm sessions/max_alice.max_session   # или tg_alice.session
 ./bridge.sh auth
 ```
 
-**Перенос на новый сервер** (есть config.yaml, но нет сессий):
+**Перенос на новый сервер** (есть конфиг, но нет сессий):
 ```bash
-scp credentials.yaml config.yaml user@server:/path/to/telegram-max-bridge/
+scp -r config/ user@server:/path/to/telegram-max-bridge/
 ssh user@server
 cd /path/to/telegram-max-bridge
 pip install -r requirements.txt
@@ -478,9 +477,9 @@ pip install -r requirements.txt
 ./bridge.sh docker up
 ```
 
-**Ручное добавление пользователя в config.yaml** (минуя wizard):
+**Ручное добавление пользователя** (минуя wizard):
 ```bash
-nano config.yaml       # добавили нового пользователя
+nano config/config.yaml   # добавили нового пользователя
 ./bridge.sh auth       # авторизует только тех, у кого нет сессии
 ```
 

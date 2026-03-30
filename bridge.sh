@@ -20,7 +20,7 @@ Local commands:
   setup users             Manage user accounts (add/remove/re-auth)
   setup bridges           Manage chat bridges (add/remove, assign users)
   setup migrate           Convert old config format to new format
-  auth                    Authenticate accounts (reads config.yaml)
+  auth                    Authenticate accounts (reads config/config.yaml)
   test [pytest args]      Run E2E tests (bridge must be running)
   test-auth               Authenticate E2E test TG account (one-time)
 
