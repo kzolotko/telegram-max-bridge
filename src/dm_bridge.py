@@ -50,6 +50,12 @@ class DmBridge:
                 filters.private & filters.reply & user_filter,
             )
         )
+        self.bot.add_handler(
+            MessageHandler(
+                self._handle_bot_non_reply,
+                filters.private & ~filters.reply & user_filter,
+            )
+        )
         await self.bot.start()
         me = await self.bot.get_me()
         user_names = ", ".join(u.name for u in self.users)
@@ -173,6 +179,14 @@ class DmBridge:
 
         except Exception as e:
             log.error("Failed to forward MAX DM to bot: %s", e, exc_info=True)
+
+    # ── TG bot non-reply hint ──────────────────────────────────────────────
+
+    async def _handle_bot_non_reply(self, client: Client, message: Message):
+        await message.reply_text(
+            "Чтобы переслать сообщение в MAX, ответьте (reply) "
+            "на конкретное сообщение в этом чате."
+        )
 
     # ── TG bot reply → MAX DM ───────────────────────────────────────────────
 

@@ -237,7 +237,11 @@ async def main(is_restart: bool = False):
             # Log MAX connection status (one connection per user, owned by listener)
             for listener in max_listeners:
                 client = listener.client
-                status = "connected" if (client and client.is_connected) else "DISCONNECTED"
+                if not client or not client.is_connected:
+                    status = "DISCONNECTED"
+                else:
+                    pong = await client.ping(timeout=5.0)
+                    status = "connected" if pong else "connected (ping failed)"
                 log.info("Health: MAX %s — %s", listener.user.name, status)
             _write_heartbeat()
 

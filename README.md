@@ -193,14 +193,14 @@ Docker Compose уже настроен для production:
 | Параметр | Значение | Назначение |
 |----------|----------|------------|
 | `restart` | `unless-stopped` | Автоперезапуск при падении |
-| `healthcheck` | File-based heartbeat (каждые 60с) | Перезапуск при зависании event loop |
+| `healthcheck` | File-based heartbeat (каждые 2 мин) + active ping | Перезапуск при зависании event loop |
 | `stop_grace_period` | 15s | Время на graceful shutdown |
 | `mem_limit` | 512m | Защита от утечек памяти |
 | `logging` | json-file, 10m × 3 | Ротация логов |
 | `security_opt` | `no-new-privileges` | Security hardening |
 | `TZ` | `Europe/Moscow` | Корректные timestamps |
 
-**Health check**: бридж пишет timestamp в `sessions/.healthcheck` каждые 5 минут. Docker проверяет, что файл не старше 10 минут. Если event loop завис — контейнер перезапускается.
+**Health check**: бридж пишет timestamp в `sessions/.healthcheck` каждые 2 минуты и шлёт реальный PING серверу MAX для проверки. Docker проверяет, что файл не старше 10 минут. Если event loop завис — контейнер перезапускается. Дополнительно, встроенный ping-watchdog принудительно переподключает MAX при 3+ неудачных пингах подряд (обнаружение «полумёртвых» соединений за ~90 сек вместо 15+ мин).
 
 **Dockerfile**: multi-stage build — gcc используется только для компиляции tgcrypto, в финальный образ не попадает.
 
@@ -407,7 +407,7 @@ src/
 | Удаление TG→MAX | ✅ в супергруппах, ⚠️ в обычных группах (Pyrogram не сообщает `chat_id`) |
 | Code/pre/text_link форматирование | ⚠️ передаётся как plain text (MAX не поддерживает) |
 | Несколько пользователей | ✅ sender routing + primary listener |
-| DM-бридж (личные сообщения) | ✅ MAX DM → TG бот, ответ через reply (текст, фото, файлы, edit, delete) |
+| DM-бридж (личные сообщения) | ✅ MAX DM → TG бот, ответ через reply (текст, фото, файлы, edit, delete); подсказка при отправке не-reply |
 | Admin-бот | ✅ удалённое управление через Telegram (status, config, pause, auth, restart) |
 | Reply/edit/delete после перезапуска | ✅ SQLite-backed store (TTL 24ч) |
 
@@ -513,4 +513,4 @@ MAX ограничивает частоту запросов SMS. Подожди
 
 - Убедитесь, что аккаунт пользователя добавлен в оба чата (TG и MAX).
 - Проверьте логи: `./bridge.sh docker logs` (Docker) или `./bridge.sh start` (локально).
-- MAX переподключается автоматически при разрыве — это нормально.
+- MAX переподключается автоматически при разрыве — это нормально. Ping-watchdog обнаруживает «полумёртвые» соединения за ~90 сек.

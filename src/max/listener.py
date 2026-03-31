@@ -14,6 +14,10 @@ log = logging.getLogger("bridge.max.listener")
 
 RECONNECT_BASE_DELAY = 2
 RECONNECT_MAX_DELAY = 60
+# Active ping watchdog: if this many consecutive pings fail, force-disconnect
+# so that _reconnect_loop picks up immediately instead of waiting minutes.
+PING_INTERVAL = 30          # seconds between health pings
+PING_MAX_FAILURES = 3       # force-disconnect after N consecutive failures
 
 
 class MaxListener:
@@ -46,6 +50,7 @@ class MaxListener:
         self._device_id: str | None = None
         self._stopped = False
         self._monitor_task: asyncio.Task | None = None
+        self._ping_task: asyncio.Task | None = None
         self._worker_task: asyncio.Task | None = None
         self._packet_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self._name_cache: dict[int, str] = {}  # max_user_id -> display name
@@ -75,6 +80,7 @@ class MaxListener:
 
         self._worker_task = asyncio.create_task(self._worker())
         self._monitor_task = asyncio.create_task(self._reconnect_loop())
+        self._ping_task = asyncio.create_task(self._ping_watchdog())
 
         log.info("Started for %s (User ID: %d)", self.user.name, self._my_user_id)
         return self._my_user_id
@@ -126,6 +132,41 @@ class MaxListener:
         # Failures are non-fatal — names will be resolved on demand.
         await self._preload_chat_members()
 
+    async def _ping_watchdog(self):
+        """Periodically ping the MAX server; force-disconnect on repeated failures.
+
+        pymax's built-in ping uses _send_and_wait which logs ERROR tracebacks
+        on every timeout but does NOT trigger a reconnect.  The recv_task may
+        stay alive for many minutes on a half-dead socket.  This watchdog
+        detects the problem early and kills the connection so that
+        _reconnect_loop picks up immediately.
+        """
+        consecutive_failures = 0
+        while not self._stopped:
+            await asyncio.sleep(PING_INTERVAL)
+            if self._stopped or not self.client:
+                break
+            try:
+                ok = await self.client.ping(timeout=10.0)
+            except Exception:
+                ok = False
+            if ok:
+                consecutive_failures = 0
+            else:
+                consecutive_failures += 1
+                log.warning("MAX listener %s: ping failed (%d/%d)",
+                            self.user.name, consecutive_failures, PING_MAX_FAILURES)
+                if consecutive_failures >= PING_MAX_FAILURES:
+                    log.warning("MAX listener %s: %d consecutive ping failures, "
+                                "forcing disconnect for reconnect",
+                                self.user.name, consecutive_failures)
+                    try:
+                        await self.client.disconnect()
+                    except Exception:
+                        pass
+                    consecutive_failures = 0
+                    # recv_task is now done → _reconnect_loop will proceed
+
     async def _reconnect_loop(self):
         delay = RECONNECT_BASE_DELAY
         while not self._stopped:
@@ -146,6 +187,10 @@ class MaxListener:
             try:
                 await self._connect()
                 delay = RECONNECT_BASE_DELAY
+                # Restart ping watchdog for the new connection
+                if self._ping_task and not self._ping_task.done():
+                    self._ping_task.cancel()
+                self._ping_task = asyncio.create_task(self._ping_watchdog())
                 log.info("MAX listener %s: reconnected (User ID: %d)",
                          self.user.name, self._my_user_id)
             except Exception as e:
@@ -153,6 +198,12 @@ class MaxListener:
 
     async def stop(self):
         self._stopped = True
+        if self._ping_task:
+            self._ping_task.cancel()
+            try:
+                await self._ping_task
+            except asyncio.CancelledError:
+                pass
         if self._monitor_task:
             self._monitor_task.cancel()
             try:
