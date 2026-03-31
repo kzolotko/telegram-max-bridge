@@ -34,6 +34,7 @@ import lz4.block
 import msgpack
 
 from pymax.mixins.socket import SocketMixin
+from pymax.static.constant import RECV_LOOP_BACKOFF_DELAY
 
 
 def _fixed_unpack_packet(self, data: bytes) -> dict[str, Any] | None:  # noqa: ANN001
@@ -91,7 +92,7 @@ def _fixed_unpack_packet(self, data: bytes) -> dict[str, Any] | None:  # noqa: A
     }
 
 
-# ── Patch 2: SocketMixin.connect — cancel orphaned tasks before reconnecting ──
+# ── Patch 2: SocketMixin.connect — set socket timeout + cancel orphaned tasks ──
 #
 # When _send_and_wait() catches an SSL/Connection error, it calls
 # self.connect() internally to create a new socket.  connect() creates fresh
@@ -104,8 +105,17 @@ def _fixed_unpack_packet(self, data: bytes) -> dict[str, Any] | None:  # noqa: A
 _original_connect = SocketMixin.connect
 
 
+# Socket read timeout in seconds.  Without this, recv() in the executor
+# blocks indefinitely on a half-dead connection — the ping watchdog has
+# to force-disconnect, and recv_task takes minutes to notice.  With a
+# timeout, recv() raises TimeoutError every SOCKET_TIMEOUT seconds,
+# giving _recv_loop a chance to check the connection state and exit
+# promptly when the socket has been closed by the watchdog or server.
+_SOCKET_TIMEOUT = 60
+
+
 async def _patched_connect(self, user_agent=None):  # noqa: ANN001
-    """Patched connect() that cancels orphaned recv/outgoing tasks first."""
+    """Patched connect() that sets socket timeout and cancels orphaned tasks."""
     old_recv = getattr(self, '_recv_task', None)
     old_out = getattr(self, '_outgoing_task', None)
     old_socket = getattr(self, '_socket', None)
@@ -128,11 +138,83 @@ async def _patched_connect(self, user_agent=None):  # noqa: ANN001
     # The socket close above is sufficient: executor threads unblock on their
     # own and their CancelledError is handled asynchronously.
 
-    return await _original_connect(self, user_agent)
+    result = await _original_connect(self, user_agent)
+
+    # Set read/write timeout on the new socket so that recv() in executor
+    # won't block forever on a half-dead connection.
+    sock = getattr(self, '_socket', None)
+    if sock is not None:
+        with contextlib.suppress(Exception):
+            sock.settimeout(_SOCKET_TIMEOUT)
+
+    return result
 
 
 if SocketMixin.connect is not _patched_connect:
     SocketMixin.connect = _patched_connect  # type: ignore[method-assign]
+
+
+# ── Patch 3: SocketMixin._recv_loop — handle socket timeout gracefully ───────
+#
+# With the socket timeout set in Patch 2, recv() raises TimeoutError every
+# _SOCKET_TIMEOUT seconds during idle periods.  The original _recv_loop
+# catches all Exceptions and logs "Error in recv_loop; backing off briefly"
+# which is extremely noisy.  This patch silently retries on TimeoutError.
+
+_original_recv_loop = SocketMixin._recv_loop
+
+
+async def _patched_recv_loop(self):  # noqa: ANN001
+    if self._socket is None:
+        self.logger.warning("Recv loop started without socket instance")
+        return
+
+    sock = self._socket
+    loop = asyncio.get_running_loop()
+
+    while True:
+        try:
+            header = await self._parse_header(loop, sock)
+            if not header:
+                break
+
+            datas = await self._recv_data(loop, header, sock)
+            if not datas:
+                continue
+
+            for data_item in datas:
+                seq = data_item.get("seq")
+                if self._handle_pending(seq % 256 if seq is not None else None, data_item):
+                    continue
+                if self._incoming is not None:
+                    await self._handle_incoming_queue(data_item)
+                await self._dispatch_incoming(data_item)
+
+        except asyncio.CancelledError:
+            self.logger.debug("Recv loop cancelled")
+            raise
+        except (TimeoutError, OSError) as exc:
+            # Socket timeout (from Patch 2) or socket closed by watchdog —
+            # check if socket is still valid before retrying.
+            try:
+                if sock.fileno() == -1:
+                    self.logger.debug("Socket closed, exiting recv loop")
+                    break
+            except Exception:
+                break
+            # Socket still open — just a read timeout during idle, retry.
+            if isinstance(exc, TimeoutError):
+                continue
+            # OSError (e.g. EBADF) — socket is dead.
+            self.logger.debug("Socket error in recv loop: %s", exc)
+            break
+        except Exception:
+            self.logger.exception("Error in recv_loop; backing off briefly")
+            await asyncio.sleep(RECV_LOOP_BACKOFF_DELAY)
+
+
+if SocketMixin._recv_loop is not _patched_recv_loop:
+    SocketMixin._recv_loop = _patched_recv_loop  # type: ignore[method-assign]
 
 
 # ── Apply patch 1 ─────────────────────────────────────────────────────────────
