@@ -285,8 +285,9 @@ class BridgeMaxClient:
         try:
             await asyncio.wait_for(
                 self._inner._send_and_wait(
-                    opcode=Opcode(3),  # PING
-                    payload={},
+                    opcode=Opcode.PING,
+                    payload={"interactive": True},
+                    cmd=0,
                 ),
                 timeout=timeout,
             )
