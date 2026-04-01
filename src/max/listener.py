@@ -173,7 +173,7 @@ class MaxListener:
             try:
                 if self.client and self.client.recv_task:
                     await self.client.recv_task
-            except Exception:
+            except (Exception, asyncio.CancelledError):
                 pass
 
             if self._stopped:
