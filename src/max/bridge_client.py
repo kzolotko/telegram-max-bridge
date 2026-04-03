@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import shutil
 import time
 from pathlib import Path
 from typing import Any
@@ -38,22 +37,38 @@ class BridgeMaxClient:
     - Clean disconnect
     """
 
-    def __init__(self, token: str, device_id: str) -> None:
+    def __init__(self, token: str, device_id: str, sessions_dir: str = "sessions") -> None:
         self._token = token
         self._device_id = device_id
         self._inner: SocketMaxClient | None = None
         self._raw_callback: Any = None
-        # Per-device work_dir so multiple users don't collide
-        self._work_dir = f"/tmp/pymax_{device_id}"
+        # Persistent per-device work_dir inside the sessions volume.
+        # Pymax stores a small SQLite DB here (~20 KB, 1 row with
+        # device_id + token).  Must survive container restarts — /tmp
+        # can be wiped by the OS, corrupting the DB mid-write.
+        self._work_dir = str(Path(sessions_dir) / "pymax" / device_id)
 
     async def connect_and_login(self) -> dict[str, Any]:
         """Connect via TCP/SSL, handshake, and login with stored token."""
-        # Clean stale pymax work_dir to prevent "file is not a database"
-        # errors from corrupted internal SQLite cache.
         work_dir = Path(self._work_dir)
-        if work_dir.exists():
-            shutil.rmtree(work_dir, ignore_errors=True)
-            log.debug("Cleaned stale pymax work_dir: %s", work_dir)
+        work_dir.mkdir(parents=True, exist_ok=True)
+
+        # If session.db exists but is corrupted, remove it so pymax
+        # recreates a fresh one.  This handles the edge case where the
+        # container was killed mid-write (e.g. OOM, docker stop -t 0).
+        session_db = work_dir / "session.db"
+        if session_db.exists():
+            try:
+                import sqlite3
+                conn = sqlite3.connect(str(session_db))
+                conn.execute("PRAGMA main.table_info('auth')")
+                conn.close()
+            except Exception:
+                log.warning("Corrupted pymax session.db detected, recreating: %s", session_db)
+                session_db.unlink(missing_ok=True)
+                # Also remove WAL/SHM journal files
+                for suffix in ("-wal", "-shm", "-journal"):
+                    (work_dir / f"session.db{suffix}").unlink(missing_ok=True)
 
         self._inner = SocketMaxClient(
             phone=_DUMMY_PHONE,

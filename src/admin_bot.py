@@ -620,7 +620,8 @@ class AdminBot:
                 token = session.load()
                 device_id = session.load_device_id()
                 if token and device_id:
-                    test_client = BridgeMaxClient(token=token, device_id=device_id)
+                    test_client = BridgeMaxClient(token=token, device_id=device_id,
+                                                     sessions_dir=self.config.sessions_dir)
                     await test_client.connect_and_login()
                     uid = test_client.inner.me.id if test_client.inner.me else session.load_user_id()
                     await test_client.disconnect()

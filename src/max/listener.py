@@ -94,7 +94,8 @@ class MaxListener:
                 pass
             self.client = None
 
-        client = BridgeMaxClient(token=self._login_token, device_id=self._device_id)
+        client = BridgeMaxClient(token=self._login_token, device_id=self._device_id,
+                                 sessions_dir=self.config.sessions_dir)
         client.set_raw_callback(self._enqueue_packet)
         await client.connect_and_login()
         self.client = client
