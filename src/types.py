@@ -28,7 +28,7 @@ class BridgeEntry:
 
 
 @dataclass
-class DmBridgeConfig:
+class BotBridgeConfig:
     bot_token: str
 
 
@@ -44,7 +44,7 @@ class AppConfig:
     api_hash: str  # Telegram API hash
     users: list['UserMapping'] = field(default_factory=list)  # top-level user registry
     bridges: list['BridgeEntry'] = field(default_factory=list)
-    dm_bridge: 'DmBridgeConfig | None' = None
+    bot_bridge: 'BotBridgeConfig | None' = None
     admin_bot: 'AdminBotConfig | None' = None
     sessions_dir: str = "sessions"
 

@@ -31,7 +31,7 @@
 | ✅ SQLite VACUUM | Автоматический VACUUM раз в 24 часа в cleanup loop — рекламация дискового пространства |
 | ✅ Admin-бот | Telegram-бот для удалённого управления: /status, /bridges, /users, /logs, /pause, /resume, /addbridge, /rmbridge, /adduser, /rmuser, /authmax, /authtg, /config, /restart. Уведомления админам при старте/перезапуске |
 | ✅ Персистентный message store | SQLite с WAL mode. TTL 24ч, cleanup каждые 10 мин. Reply/edit/delete работают после перезапуска |
-| ✅ DM-бридж | MAX DMs → TG бот с reply-routing. Один бот на всех пользователей из bridges. Текст, фото, файлы, edit, delete. Настройка: `dm_bot_token` в `config/credentials.yaml` |
+| ✅ DM-бридж + групповой бот | MAX DMs → TG бот с reply-routing + пересылка групповых сообщений от несконфигурированных пользователей через бота (авто-определение по членству бота в группе). Один бот на всё. Настройка: `max2tg_bridge_bot_token` в `config/credentials.yaml` |
 | ✅ Реструктуризация конфига | Отдельная секция `users:` (реестр пользователей) + `bridges:` со ссылками на пользователей по имени. Изолированные сценарии: управление пользователями (`setup users`) отдельно от управления мостами (`setup bridges`). Обратная совместимость со старым форматом + миграция (`setup migrate`) |
 | ✅ E2E-автотесты | 86 тестов через реальные аккаунты TG и MAX. 71 pass, 6 skip (ограничение протокола MAX), 3 manual only. Включая DM-бридж тесты. Статусы автообновляются в `TEST_CASES.md`. Запуск: `./bridge.sh test` |
 | ✅ Queue-based MAX listener | Recv callback → asyncio.Queue → worker task. Устраняет deadlock при `_send_and_wait` (get_file_by_id, get_users) из обработчиков пакетов |

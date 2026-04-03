@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
 import time
+from pathlib import Path
 from typing import Any
 from uuid import UUID
 
@@ -41,16 +43,25 @@ class BridgeMaxClient:
         self._device_id = device_id
         self._inner: SocketMaxClient | None = None
         self._raw_callback: Any = None
+        # Per-device work_dir so multiple users don't collide
+        self._work_dir = f"/tmp/pymax_{device_id}"
 
     async def connect_and_login(self) -> dict[str, Any]:
         """Connect via TCP/SSL, handshake, and login with stored token."""
+        # Clean stale pymax work_dir to prevent "file is not a database"
+        # errors from corrupted internal SQLite cache.
+        work_dir = Path(self._work_dir)
+        if work_dir.exists():
+            shutil.rmtree(work_dir, ignore_errors=True)
+            log.debug("Cleaned stale pymax work_dir: %s", work_dir)
+
         self._inner = SocketMaxClient(
             phone=_DUMMY_PHONE,
             token=self._token,
             device_id=UUID(self._device_id),
             send_fake_telemetry=False,
             reconnect=False,
-            work_dir="/tmp/pymax_bridge",
+            work_dir=self._work_dir,
         )
         # Silence PyMax's own logger to avoid duplicate output
         self._inner.logger.setLevel(logging.WARNING)

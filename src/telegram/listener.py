@@ -33,6 +33,8 @@ class TelegramListener:
         on_event: Callable[[BridgeEvent], Awaitable[None]],
         client: Client,
         user: UserMapping,
+        bot_user_id: int | None = None,
+        remap_bot_msg: Callable[[int, int], None] | None = None,
     ):
         self.config = config
         self.lookup = lookup
@@ -40,6 +42,8 @@ class TelegramListener:
         self.on_event = on_event
         self.client = client
         self.user = user
+        self._bot_user_id: int | None = bot_user_id
+        self._remap_bot_msg = remap_bot_msg
         # Cache: tg_msg_id → chat_id, for delete events in regular groups
         # where Pyrogram does not include chat info in the callback.
         self._msg_chat_cache: dict[int, int] = {}
@@ -50,13 +54,16 @@ class TelegramListener:
         # Reaction cache: (chat_id, msg_id) → last known "chosen" emoji (or None)
         # Used to detect changes and avoid sending duplicate/empty reaction syncs.
         self._reaction_cache: dict[tuple[int, int], str | None] = {}
-        # TG user IDs that belong to bridge accounts.  Any message arriving
-        # from one of these accounts is likely a mirror sent by the bridge.
-        # Used to handle a rare race condition where the TG update arrives at
-        # the listener before bridge.py finishes calling mark_tg().
-        self._bridge_tg_user_ids: frozenset[int] = frozenset(
+        # TG user IDs that belong to bridge accounts (including the bot).
+        # Any message arriving from one of these accounts is likely a mirror
+        # sent by the bridge.  Used to handle a race condition where the TG
+        # update arrives before bridge.py finishes calling mark_tg().
+        bridge_ids: set[int] = {
             entry.user.telegram_user_id for entry in config.bridges
-        )
+        }
+        if bot_user_id is not None:
+            bridge_ids.add(bot_user_id)
+        self._bridge_tg_user_ids: frozenset[int] = frozenset(bridge_ids)
 
     async def start(self) -> int:
         chat_ids = self.lookup.get_tg_chat_ids_for_user(self.user.telegram_user_id)
@@ -93,6 +100,13 @@ class TelegramListener:
             msg_text = message.text or message.caption or ""
             if msg_text.startswith(MIRROR_MARKER):
                 log.debug("TG msg %s → has mirror marker, skipping", message.id)
+                # In regular groups, bot and user see different msg IDs.
+                # Store user-perspective ID so replies to bot messages resolve.
+                if (self._remap_bot_msg
+                        and message.from_user
+                        and message.from_user.id == self._bot_user_id):
+                    await asyncio.sleep(2.0)
+                    self._remap_bot_msg(message.chat.id, message.id)
                 return
 
             # Late-check for bridge accounts: a TG update can arrive at this
@@ -114,6 +128,17 @@ class TelegramListener:
                     log.debug("TG msg %s → mirror (late check), skipping", message.id)
                     return
                 if msg_text.startswith(MIRROR_MARKER):
+                    if (self._remap_bot_msg
+                            and message.from_user
+                            and message.from_user.id == self._bot_user_id):
+                        self._remap_bot_msg(message.chat.id, message.id)
+                    return
+                # Bot messages without MIRROR_MARKER (e.g. non-first media
+                # group items where only the first item gets a caption).
+                # Skip to prevent echo back to MAX.
+                if (message.from_user
+                        and message.from_user.id == self._bot_user_id):
+                    log.debug("TG msg %s → bot msg without marker, skipping", message.id)
                     return
 
             bridge_entry = self.lookup.get_primary_by_tg(message.chat.id)

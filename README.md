@@ -71,7 +71,7 @@ TG бот → отправляет вам: "[Имя Фамилия]: текст"
 
 - Один бот обслуживает **всех** пользователей из `bridges`
 - Поддерживает: текст, фото, файлы, редактирование, удаление
-- Настройка: создать бота через @BotFather, добавить `dm_bot_token` в `config/credentials.yaml`
+- Настройка: создать бота через @BotFather, добавить `max2tg_bridge_bot_token` в `config/credentials.yaml`
 
 ---
 
@@ -132,7 +132,7 @@ pip install -r requirements.txt
 ```
 
 ```yaml
-dm_bot_token: "123456789:ABCdef..."
+max2tg_bridge_bot_token: "123456789:ABCdef..."
 ```
 
 Пользователи берутся автоматически из секции `users` — дополнительная настройка не нужна.
@@ -341,7 +341,7 @@ src/
 ├── auth.py              # Интерактивная авторизация аккаунтов (по конфигу)
 ├── setup.py             # Интерактивный мастер настройки (credentials + users + bridges)
 ├── message_store.py     # SQLite-backed маппинг ID сообщений (TTL 24h, periodic VACUUM)
-├── dm_bridge.py         # DM-бридж: MAX DMs ↔ TG бот (текст, медиа, edit, delete)
+├── dm_bridge.py         # DM-бридж: MAX DMs ↔ TG бот + групповая пересылка от несконфигурированных пользователей
 ├── dm_store.py          # Маппинг bot_msg_id → MAX DM контекст (для reply routing)
 ├── admin_bot.py         # Telegram-бот удалённого управления (status, config, auth, pause)
 ├── bridge_state.py      # Глобальная/per-bridge пауза пересылки

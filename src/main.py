@@ -86,7 +86,41 @@ async def main(is_restart: bool = False):
     if not users:
         raise RuntimeError("No users initialized successfully — cannot start bridge.")
 
-    bridge = Bridge(lookup, message_store, tg_pool, max_pool, mirror_tracker, bridge_state)
+    # ── Optional bot client (shared by DM bridge + group forwarding) ──────
+    bot_client = None
+    bot_user_id = None
+    bot_groups: set[int] = set()
+
+    if config.bot_bridge:
+        log.info("Initializing bridge bot...")
+        bot_client = PyrogramClient(
+            name="dm_bot",
+            api_id=config.api_id,
+            api_hash=config.api_hash,
+            bot_token=config.bot_bridge.bot_token,
+            workdir=config.sessions_dir,
+        )
+        await bot_client.start()
+        bot_me = await bot_client.get_me()
+        bot_user_id = bot_me.id
+        log.info("Bridge bot started: @%s (ID: %d)", bot_me.username, bot_user_id)
+
+        # Probe which configured TG groups the bot can access
+        all_tg_chat_ids = {e.telegram_chat_id for e in config.bridges}
+        for chat_id in all_tg_chat_ids:
+            try:
+                await bot_client.get_chat(chat_id)
+                bot_groups.add(chat_id)
+            except Exception:
+                pass
+        if bot_groups:
+            log.info("  Bot accessible in %d/%d group(s) — will forward non-configured users",
+                     len(bot_groups), len(all_tg_chat_ids))
+        else:
+            log.info("  Bot not in any configured groups — group forwarding via primary users")
+
+    bridge = Bridge(lookup, message_store, tg_pool, max_pool, mirror_tracker, bridge_state,
+                    bot_client=bot_client, bot_groups=bot_groups)
 
     # Warm up Pyrogram peer cache for configured chats only.
     # Previously we iterated ALL dialogs (~20s); now we resolve only the
@@ -118,24 +152,19 @@ async def main(is_restart: bool = False):
     tg_listeners = []
     for user in users:
         client = tg_pool.get_client(user.telegram_user_id)
-        listener = TelegramListener(config, lookup, mirror_tracker, bridge.handle_event, client, user)
+        listener = TelegramListener(config, lookup, mirror_tracker, bridge.handle_event,
+                                    client, user, bot_user_id=bot_user_id,
+                                    remap_bot_msg=bridge.remap_bot_msg)
         await listener.start()
         tg_listeners.append(listener)
 
-    # ── Optional DM bridge ──────────────────────────────────────────────────
+    # ── Optional DM bridge (uses already-started bot client) ────────────────
     dm_bridge = None
-    if config.dm_bridge:
-        log.info("Initializing DM bridge bot...")
+    if config.bot_bridge and bot_client:
+        log.info("Initializing DM bridge...")
         dm_store = DmStore(conn=message_store.connection)
         dm_store.start()
 
-        bot_client = PyrogramClient(
-            name="dm_bot",
-            api_id=config.api_id,
-            api_hash=config.api_hash,
-            bot_token=config.dm_bridge.bot_token,
-            workdir=config.sessions_dir,
-        )
         dm_bridge = DmBridge(
             bot_client=bot_client,
             max_pool=max_pool,
@@ -174,9 +203,13 @@ async def main(is_restart: bool = False):
     log.info("Users:")
     for user in users:
         log.info("  %-12s  TG:%-15s  MAX:%s", user.name, user.telegram_user_id, user.max_user_id)
-    if dm_bridge:
-        dm_names = ", ".join(u.name for u in users)
-        log.info("DM bridge: enabled for %s (MAX DMs → TG bot)", dm_names)
+    if bot_client:
+        features = []
+        if dm_bridge:
+            features.append("DM bridge")
+        if bot_groups:
+            features.append(f"group forwarding ({len(bot_groups)} group(s))")
+        log.info("Bot: %s", ", ".join(features) if features else "started (no features active)")
 
     # ── Optional admin bot ──────────────────────────────────────────────────
     admin_bot = None
@@ -269,6 +302,11 @@ async def main(is_restart: bool = False):
         await listener.stop()
     await tg_pool.stop()
     await max_pool.stop()
+    if bot_client:
+        try:
+            await bot_client.stop()
+        except Exception:
+            pass
     message_store.stop()
 
     restart = admin_bot.restart_requested if admin_bot else False

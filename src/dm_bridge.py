@@ -43,6 +43,7 @@ class DmBridge:
         self._allowed_tg_ids: set[int] = {u.telegram_user_id for u in users}
 
     async def start(self):
+        """Register DM handlers on the (already-started) bot client."""
         user_filter = filters.user(list(self._allowed_tg_ids))
         self.bot.add_handler(
             MessageHandler(
@@ -56,17 +57,14 @@ class DmBridge:
                 filters.private & ~filters.reply & user_filter,
             )
         )
-        await self.bot.start()
         me = await self.bot.get_me()
         user_names = ", ".join(u.name for u in self.users)
-        log.info("DM bridge bot started: @%s (ID: %d) for users: %s",
+        log.info("DM bridge handlers registered: @%s (ID: %d) for users: %s",
                  me.username, me.id, user_names)
 
     async def stop(self):
-        try:
-            await self.bot.stop()
-        except Exception:
-            pass
+        """No-op — bot lifecycle is managed externally."""
+        pass
 
     def _resolve_user(self, recipient_max_user_id: int | None) -> UserMapping | None:
         if recipient_max_user_id:

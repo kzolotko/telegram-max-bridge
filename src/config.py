@@ -4,7 +4,7 @@ from pathlib import Path
 
 import yaml
 
-from .types import AdminBotConfig, AppConfig, BridgeEntry, DmBridgeConfig, UserMapping
+from .types import AdminBotConfig, AppConfig, BridgeEntry, BotBridgeConfig, UserMapping
 
 _log = logging.getLogger("bridge.config")
 
@@ -30,8 +30,10 @@ def load_credentials(credentials_path: str | None = None) -> dict:
     creds = {"api_id": int(raw["api_id"]), "api_hash": str(raw["api_hash"])}
 
     # Optional bot tokens and admin settings
-    if raw.get("dm_bot_token"):
-        creds["dm_bot_token"] = str(raw["dm_bot_token"])
+    # New name: max2tg_bridge_bot_token; fallback to old dm_bot_token
+    bot_token = raw.get("max2tg_bridge_bot_token") or raw.get("dm_bot_token")
+    if bot_token:
+        creds["bot_bridge_token"] = str(bot_token)
     if raw.get("admin_bot_token"):
         creds["admin_bot_token"] = str(raw["admin_bot_token"])
     if raw.get("admin_ids"):
@@ -45,18 +47,18 @@ def _is_new_format(raw: dict) -> bool:
     return isinstance(raw.get("users"), list) and len(raw.get("users", [])) > 0
 
 
-def _parse_optional_sections(raw: dict, creds: dict) -> tuple['DmBridgeConfig | None', 'AdminBotConfig | None']:
-    """Parse dm_bridge and admin_bot from credentials (primary) or config (fallback)."""
-    # ── DM bridge ───────────────────────────────────────────────────────────
-    dm_bridge_cfg = None
-    dm_bot_token = creds.get("dm_bot_token")
-    if not dm_bot_token:
-        # Backward compat: read from config.yaml
+def _parse_optional_sections(raw: dict, creds: dict) -> tuple['BotBridgeConfig | None', 'AdminBotConfig | None']:
+    """Parse bot_bridge and admin_bot from credentials (primary) or config (fallback)."""
+    # ── Bot bridge (DM + group forwarding) ──────────────────────────────────
+    bot_bridge_cfg = None
+    bot_token = creds.get("bot_bridge_token")
+    if not bot_token:
+        # Backward compat: read from config.yaml dm_bridge section
         dm_raw = raw.get("dm_bridge")
         if dm_raw:
-            dm_bot_token = dm_raw.get("bot_token")
-    if dm_bot_token:
-        dm_bridge_cfg = DmBridgeConfig(bot_token=str(dm_bot_token))
+            bot_token = dm_raw.get("bot_token")
+    if bot_token:
+        bot_bridge_cfg = BotBridgeConfig(bot_token=str(bot_token))
 
     # ── Admin bot ───────────────────────────────────────────────────────────
     admin_bot_cfg = None
@@ -74,7 +76,7 @@ def _parse_optional_sections(raw: dict, creds: dict) -> tuple['DmBridgeConfig | 
             raise ValueError("admin_ids must be set in credentials.yaml when admin_bot_token is provided")
         admin_bot_cfg = AdminBotConfig(bot_token=str(admin_bot_token), admin_ids=admin_ids)
 
-    return dm_bridge_cfg, admin_bot_cfg
+    return bot_bridge_cfg, admin_bot_cfg
 
 
 def _to_int(value, field_name: str, context: str) -> int:
@@ -140,14 +142,14 @@ def _load_new_format(raw: dict, creds: dict) -> AppConfig:
     if not bridges:
         raise ValueError("At least one bridge entry is required")
 
-    dm_bridge_cfg, admin_bot_cfg = _parse_optional_sections(raw, creds)
+    bot_bridge_cfg, admin_bot_cfg = _parse_optional_sections(raw, creds)
 
     return AppConfig(
         api_id=creds["api_id"],
         api_hash=creds["api_hash"],
         users=list(user_registry.values()),
         bridges=bridges,
-        dm_bridge=dm_bridge_cfg,
+        bot_bridge=bot_bridge_cfg,
         admin_bot=admin_bot_cfg,
     )
 
@@ -205,14 +207,14 @@ def _load_old_format(raw: dict, creds: dict) -> AppConfig:
     if not bridges:
         raise ValueError("At least one bridge entry is required")
 
-    dm_bridge_cfg, admin_bot_cfg = _parse_optional_sections(raw, creds)
+    bot_bridge_cfg, admin_bot_cfg = _parse_optional_sections(raw, creds)
 
     return AppConfig(
         api_id=creds["api_id"],
         api_hash=creds["api_hash"],
         users=list(seen_users.values()),
         bridges=bridges,
-        dm_bridge=dm_bridge_cfg,
+        bot_bridge=bot_bridge_cfg,
         admin_bot=admin_bot_cfg,
     )
 

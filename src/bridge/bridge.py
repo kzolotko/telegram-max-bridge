@@ -1,5 +1,7 @@
 import io
 import logging
+from collections import deque
+from dataclasses import dataclass
 
 from pyrogram import enums as tg_enums
 
@@ -21,6 +23,12 @@ from .mirror_tracker import MirrorTracker
 log = logging.getLogger("bridge.core")
 
 
+@dataclass
+class _BotRemapEntry:
+    max_chat_id: int
+    max_msg_id: str
+
+
 class Bridge:
     def __init__(
         self,
@@ -30,6 +38,8 @@ class Bridge:
         max_pool: MaxClientPool,
         mirror_tracker: MirrorTracker,
         bridge_state: BridgeState | None = None,
+        bot_client=None,
+        bot_groups: set[int] | None = None,
     ):
         self.lookup = lookup
         self.store = message_store
@@ -37,6 +47,35 @@ class Bridge:
         self.max_pool = max_pool
         self.mirrors = mirror_tracker
         self.state = bridge_state
+        self.bot_client = bot_client          # Pyrogram bot client (or None)
+        self.bot_groups = bot_groups or set()  # TG group IDs the bot can access
+        # Queue for bot→user msg ID remapping in regular TG groups.
+        # In regular groups, msg IDs differ between bot and user accounts,
+        # breaking reply resolution.  Bridge enqueues max_msg_id after bot
+        # sends; TelegramListener calls remap_bot_msg() with the user-
+        # perspective ID so both are in the message_map.
+        self._bot_remap: dict[int, deque[_BotRemapEntry]] = {}
+
+    def remap_bot_msg(self, tg_chat_id: int, user_msg_id: int):
+        """Store user-perspective TG msg ID for a bot-sent message."""
+        q = self._bot_remap.get(tg_chat_id)
+        if not q:
+            return
+        try:
+            entry = q.popleft()
+        except IndexError:
+            return
+        self.store.store(tg_chat_id, user_msg_id, entry.max_chat_id, entry.max_msg_id)
+        log.debug("remap_bot_msg: chat=%s user_msg=%s → max=%s",
+                  tg_chat_id, user_msg_id, entry.max_msg_id)
+
+    def _enqueue_bot_remap(self, client, tg_chat_id: int, max_chat_id: int, max_msg_id: str):
+        """If the message was sent by the bot, queue a remap entry."""
+        if client is not self.bot_client:
+            return
+        self._bot_remap.setdefault(tg_chat_id, deque(maxlen=200)).append(
+            _BotRemapEntry(max_chat_id=max_chat_id, max_msg_id=max_msg_id)
+        )
 
     async def handle_event(self, event: BridgeEvent):
         if self.state and not self.state.should_forward(event.bridge_entry.name):
@@ -93,6 +132,9 @@ class Bridge:
                 tg_msg_id=int(event.reply_to_source_msg_id),
                 max_chat_id=max_chat_id,
             )
+            if reply_to is None:
+                log.warning("tg→max reply: no mapping for tg_msg_id=%s in chat %s",
+                            event.reply_to_source_msg_id, tg_chat_id)
 
         if event.event_type == "media_group" and event.media_list:
             max_msg_id = await self.max_pool.send_media_multi(
@@ -219,14 +261,20 @@ class Bridge:
             log.debug("max→tg (sender=%s) type=%s text=%r",
                       sender_entry.user.name, event.event_type, text[:50])
         else:
-            # Unknown sender — use primary's TG account with [Name]: prefix.
-            client = self.tg_pool.get_client(entry.user.telegram_user_id)
+            # Unknown sender — use bot if available for this group,
+            # otherwise fall back to primary's TG account.
             text, fmt = prepend_sender_name_fmt(
                 event.sender_display_name, event.text or "", fmt,
             )
-            log.debug("max→tg via primary=%s (max_sender_id=%s not matched in config) "
-                     "type=%s text=%r",
-                     entry.user.name, event.sender_user_id, event.event_type, text[:50])
+            if self.bot_client and entry.telegram_chat_id in self.bot_groups:
+                client = self.bot_client
+                log.debug("max→tg via bot (max_sender_id=%s) type=%s text=%r",
+                         event.sender_user_id, event.event_type, text[:50])
+            else:
+                client = self.tg_pool.get_client(entry.user.telegram_user_id)
+                log.debug("max→tg via primary=%s (max_sender_id=%s not matched in config) "
+                         "type=%s text=%r",
+                         entry.user.name, event.sender_user_id, event.event_type, text[:50])
 
         if not client:
             log.warning("No TG client for event, dropping")
@@ -281,6 +329,7 @@ class Bridge:
                         max_msg_id=str(event.source_msg_id),
                         tg_msg_ids=[m.id for m in msgs],
                     )
+                    self._enqueue_bot_remap(client, tg_chat_id, max_chat_id, str(event.source_msg_id))
                 for msg in (msgs or []):
                     self.mirrors.mark_tg(msg.id)
 
@@ -293,6 +342,7 @@ class Bridge:
             )
             if event.source_msg_id is not None:
                 self.store.store(tg_chat_id, msg.id, max_chat_id, str(event.source_msg_id))
+                self._enqueue_bot_remap(client, tg_chat_id, max_chat_id, str(event.source_msg_id))
             self.mirrors.mark_tg(msg.id)
 
         elif event.event_type == "photo" and event.media:
@@ -306,6 +356,7 @@ class Bridge:
             )
             if event.source_msg_id is not None:
                 self.store.store(tg_chat_id, msg.id, max_chat_id, str(event.source_msg_id))
+                self._enqueue_bot_remap(client, tg_chat_id, max_chat_id, str(event.source_msg_id))
             self.mirrors.mark_tg(msg.id)
 
         elif event.event_type in ("video", "audio", "file") and event.media:
@@ -324,6 +375,7 @@ class Bridge:
             )
             if event.source_msg_id is not None:
                 self.store.store(tg_chat_id, msg.id, max_chat_id, str(event.source_msg_id))
+                self._enqueue_bot_remap(client, tg_chat_id, max_chat_id, str(event.source_msg_id))
             self.mirrors.mark_tg(msg.id)
 
         elif event.event_type in ("photo", "video", "audio", "file"):
@@ -335,6 +387,7 @@ class Bridge:
             )
             if event.source_msg_id is not None:
                 self.store.store(tg_chat_id, msg.id, max_chat_id, str(event.source_msg_id))
+                self._enqueue_bot_remap(client, tg_chat_id, max_chat_id, str(event.source_msg_id))
             self.mirrors.mark_tg(msg.id)
 
         elif event.event_type == "sticker":
@@ -348,6 +401,7 @@ class Bridge:
             )
             if event.source_msg_id is not None:
                 self.store.store(tg_chat_id, msg.id, max_chat_id, str(event.source_msg_id))
+                self._enqueue_bot_remap(client, tg_chat_id, max_chat_id, str(event.source_msg_id))
             self.mirrors.mark_tg(msg.id)
 
         elif event.event_type == "edit":

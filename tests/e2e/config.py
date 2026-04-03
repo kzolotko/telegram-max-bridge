@@ -184,9 +184,9 @@ def load_e2e_config() -> E2EConfig:
     try:
         from src.config import load_config as _load_bridge_config
         bridge_cfg = _load_bridge_config()
-        if bridge_cfg.dm_bridge:
+        if bridge_cfg.bot_bridge:
             # Bot ID = the number before ":" in the token
-            dm_bot_id = int(bridge_cfg.dm_bridge.bot_token.split(":")[0])
+            dm_bot_id = int(bridge_cfg.bot_bridge.bot_token.split(":")[0])
             # DM target = primary user's MAX user ID (mary sends DMs to kzolotko)
             # Find the primary user in the bridge config by matching e2e user_name
             for entry in bridge_cfg.bridges:

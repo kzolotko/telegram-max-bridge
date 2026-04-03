@@ -24,5 +24,5 @@ max_chat_id: -72099589405396
 # Seconds to wait for a bridged message to arrive
 timeout: 15
 
-# DM bridge tests are auto-detected from config.yaml (dm_bridge.bot_token).
+# DM bridge tests are auto-detected from credentials.yaml (max2tg_bridge_bot_token).
 # No extra config needed here.
