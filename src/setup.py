@@ -97,7 +97,7 @@ def _load_existing_config() -> tuple[list[dict], list[dict], dict]:
     Returns (users, bridges, extra_sections) where:
       - users: list of {name, telegram_user_id, max_user_id}
       - bridges: list of {name, telegram_chat_id, max_chat_id, users: [name, ...]}
-      - extra_sections: dict with dm_bridge, admin_bot, etc.
+      - extra_sections: dict with legacy config sections (dm_bridge, admin_bot, etc.)
     """
     config_path = Path(CONFIG_FILE)
     if not config_path.exists():

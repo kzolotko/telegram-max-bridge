@@ -4,7 +4,7 @@ DM Bridge E2E tests.
 Tests MAX DM → TG bot forwarding and TG bot reply → MAX DM routing.
 
 Prerequisites:
-  - dm_bridge.bot_token configured in config.yaml
+  - max2tg_bridge_bot_token configured in credentials.yaml
   - second_user_name configured in e2e_config.yaml
   - Bridge must be running with DM bridge enabled
   - Both users must have started a chat with the bot (/start)
@@ -30,7 +30,7 @@ pytestmark = [
 def _require_dm(harness):
     """Skip test if DM bridge is not configured."""
     if not harness.has_dm:
-        pytest.skip("Requires second_user_name and dm_bridge in config.yaml")
+        pytest.skip("Requires second_user_name and max2tg_bridge_bot_token in credentials.yaml")
 
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────

@@ -44,7 +44,7 @@ class E2EConfig:
     # Second user (optional — enables two-user tests)
     secondary: UserCreds | None
 
-    # DM bridge (auto-detected from config.yaml dm_bridge section)
+    # DM bridge (auto-detected from credentials.yaml bot_bridge token)
     dm_bot_id: int | None  # TG bot user ID (extracted from bot_token)
     dm_max_chat_id: int | None  # MAX user ID of primary user (DM target)
 
