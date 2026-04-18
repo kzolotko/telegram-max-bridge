@@ -10,8 +10,8 @@ Prerequisites:
   - Both users must have started a chat with the bot (/start)
 
 Test flow:
-  mary sends a MAX DM to kzolotko → bridge detects DM → bot sends to
-  kzolotko's TG → kzolotko replies via bot → reply goes back to mary in MAX.
+  mary sends a MAX DM to alice → bridge detects DM → bot sends to
+  alice's TG → alice replies via bot → reply goes back to mary in MAX.
 """
 
 import asyncio

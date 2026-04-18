@@ -55,7 +55,7 @@ users:
 #                       Supergroups start with -100, regular groups don't.
 #
 #   max_chat_id       — open the chat at https://web.max.ru, the ID is in
-#                       the URL: web.max.ru/#/chats/@chat/-72099589405396
+#                       the URL: web.max.ru/#/chats/@chat/-72099000000001
 
 bridges:
   # ── Minimal: one chat, one user ────────────────────────────────────────────

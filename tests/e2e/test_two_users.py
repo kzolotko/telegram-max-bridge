@@ -6,7 +6,7 @@ These tests require a second user configured in e2e_config.yaml
 
 U01: Sender routing TG→MAX — mary sends, bridge uses mary's MAX account (no prefix)
 U02: Sender routing MAX→TG — mary sends via MAX, bridge uses mary's TG account (no prefix)
-U03: Cross-user reply TG→MAX — mary replies to kzolotko's message
+U03: Cross-user reply TG→MAX — mary replies to alice's message
 U04: Delete TG→MAX observed by second user
 U05: Delete MAX→TG observed by second user
 
@@ -82,7 +82,7 @@ async def test_U03_cross_user_reply_tg_to_max(harness):
     if not harness.has_second_user:
         pytest.skip(_NEED_SECOND_USER)
 
-    # Step 1: kzolotko sends original message
+    # Step 1: alice sends original message
     marker1 = harness.make_marker()
     orig_msg = await harness.tg.send_text(f"Original {marker1}")
 

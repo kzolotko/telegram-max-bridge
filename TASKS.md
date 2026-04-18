@@ -27,13 +27,13 @@
 
 | Фича | Описание |
 |------|----------|
-| ✅ Production Docker | Multi-stage Dockerfile (gcc только в builder), file-based healthcheck (heartbeat каждые 5 мин → Docker перезапускает при зависании), graceful shutdown (stop_grace_period 15s), mem_limit 512m, log rotation (json-file 10m×3), no-new-privileges, TZ |
+| ✅ Production Docker | Multi-stage Dockerfile (gcc только в builder), file-based healthcheck (heartbeat каждые 2 мин + active MAX ping → Docker перезапускает при зависании, stale threshold 10 мин), graceful shutdown (stop_grace_period 15s), mem_limit 512m, log rotation (json-file 10m×3), no-new-privileges, TZ |
 | ✅ SQLite VACUUM | Автоматический VACUUM раз в 24 часа в cleanup loop — рекламация дискового пространства |
-| ✅ Admin-бот | Telegram-бот для удалённого управления: /status, /bridges, /users, /logs, /pause, /resume, /addbridge, /rmbridge, /adduser, /rmuser, /authmax, /authtg, /config, /restart. Уведомления админам при старте/перезапуске |
+| ✅ Admin-бот | Telegram-бот для удалённого управления: /help, /status, /bridges, /users, /logs, /pause, /resume, /addbridge, /rmbridge, /addbridgeuser, /rmbridgeuser, /adduser, /rmuser, /authmax, /authtg, /config, /restart, /cancel. Уведомления админам при старте/перезапуске |
 | ✅ Персистентный message store | SQLite с WAL mode. TTL 24ч, cleanup каждые 10 мин. Reply/edit/delete работают после перезапуска |
 | ✅ DM-бридж + групповой бот | MAX DMs → TG бот с reply-routing + пересылка групповых сообщений от несконфигурированных пользователей через бота (авто-определение по членству бота в группе). Один бот на всё. Настройка: `max2tg_bridge_bot_token` в `config/credentials.yaml` |
 | ✅ Реструктуризация конфига | Отдельная секция `users:` (реестр пользователей) + `bridges:` со ссылками на пользователей по имени. Изолированные сценарии: управление пользователями (`setup users`) отдельно от управления мостами (`setup bridges`). Обратная совместимость со старым форматом + миграция (`setup migrate`) |
-| ✅ E2E-автотесты | 86 тестов через реальные аккаунты TG и MAX. 71 pass, 6 skip (ограничение протокола MAX), 3 manual only. Включая DM-бридж тесты. Статусы автообновляются в `TEST_CASES.md`. Запуск: `./bridge.sh test` |
+| ✅ E2E-автотесты | 86 тест-кейсов через реальные аккаунты TG и MAX. 65 pass, 6 skip (ограничение протокола MAX), 7 manual only (👤), 7 N/A (покрыты другими тест-кейсами), 1 failed (E01 astral emoji TG→MAX). Включая DM-бридж тесты. Статусы автообновляются в `TEST_CASES.md`. Запуск: `./bridge.sh test` |
 | ✅ Queue-based MAX listener | Recv callback → asyncio.Queue → worker task. Устраняет deadlock при `_send_and_wait` (get_file_by_id, get_users) из обработчиков пакетов |
 | ✅ Graceful reconnect | Pool-клиенты MAX автоматически переподключаются; retry отправки; MirrorTracker с LRU-eviction (10k); health-check каждые 5 мин |
 | ✅ Альбомы (media groups) | TG→MAX: буферизация по `media_group_id` (0.8 с) → единое сообщение с несколькими attaches. MAX→TG: все аттачи → TG `send_media_group` |

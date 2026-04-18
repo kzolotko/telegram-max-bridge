@@ -31,7 +31,7 @@ class E2EHarness:
         self.config = config
         self.timeout = config.timeout
 
-        # Primary user (kzolotko)
+        # Primary user (alice)
         self.tg = TgTestClient(
             session_name=config.primary.tg_e2e_session,
             api_id=config.api_id,
@@ -49,7 +49,7 @@ class E2EHarness:
         # DM bridge testing — optional
         # tg_bot_chat: listener for bot's private messages (shares primary TG client)
         # max_dm: MAX client that sends DMs AS the second user (mary) to the
-        #         bridge user (kzolotko).  Uses secondary credentials.
+        #         bridge user (alice).  Uses secondary credentials.
         self.tg_bot_chat: TgBotChatListener | None = None
         self.max_dm: MaxTestClient | None = None
         self._dm_bot_id: int | None = config.dm_bot_id
@@ -101,7 +101,7 @@ class E2EHarness:
             self.tg_bot_chat.start()
 
             # max_dm connects as the SECOND user (mary) — she sends DMs to
-            # the bridge user (kzolotko), simulating an external person.
+            # the bridge user (alice), simulating an external person.
             self.max_dm = MaxTestClient(
                 login_token=self.config.secondary.max_login_token,
                 device_id=self.config.secondary.max_test_device_id,

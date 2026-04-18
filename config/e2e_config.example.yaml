@@ -10,7 +10,7 @@
 #      ./bridge.sh start
 
 # Primary user — must match a user in config.yaml
-user_name: kzolotko
+user_name: alice
 
 # Second user (optional) — enables two-user tests: reactions, deletes,
 # sender routing.  Must also be configured in config.yaml for the same bridge.
@@ -19,7 +19,7 @@ user_name: kzolotko
 
 # Chat pair to test against (must match a bridge in config.yaml)
 tg_chat_id: -1001234567890
-max_chat_id: -72099589405396
+max_chat_id: -72099000000001
 
 # Seconds to wait for a bridged message to arrive
 timeout: 15

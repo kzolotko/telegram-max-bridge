@@ -74,7 +74,7 @@ def print_section(title: str):
 def parse_max_chat_id(text: str) -> int:
     """Extract MAX chat ID from a URL or raw number."""
     text = text.strip()
-    # https://web.max.ru/#/chats/@chat/-72099589405396
+    # https://web.max.ru/#/chats/@chat/-72099000000001
     m = re.search(r'/@chat/(-?\d+)', text)
     if m:
         return int(m.group(1))
@@ -84,8 +84,8 @@ def parse_max_chat_id(text: str) -> int:
         return int(m.group(1))
     raise ValueError(
         f"Cannot parse MAX chat ID from: {text!r}\n"
-        f"  Expected a URL like https://web.max.ru/#/chats/@chat/-72099589405396\n"
-        f"  or a plain negative number like -72099589405396"
+        f"  Expected a URL like https://web.max.ru/#/chats/@chat/-72099000000001\n"
+        f"  or a plain negative number like -72099000000001"
     )
 
 
@@ -764,7 +764,7 @@ def _search_and_select_max_chat(chats: list[dict]) -> tuple[int, str] | None:
 def _prompt_max_chat_id_manual() -> int:
     """Fallback: ask user to paste MAX chat URL or ID manually."""
     print("  Open https://web.max.ru → go to the desired chat")
-    print("  The URL will look like: https://web.max.ru/#/chats/@chat/-72099589405396")
+    print("  The URL will look like: https://web.max.ru/#/chats/@chat/-72099000000001")
     while True:
         try:
             url_or_id = prompt("Paste the MAX chat URL (or just the numeric ID)")
