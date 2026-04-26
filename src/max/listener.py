@@ -640,6 +640,22 @@ class MaxListener:
                     log.warning("Failed to resolve file URL for fileId=%s: %s",
                                 att.get("fileId"), e)
 
+            # VIDEO attachments carry only videoId/token; resolve the playback
+            # URL via VIDEO_PLAY (opcode 83) — safe here (worker context).
+            if not media_url and att_type == "VIDEO" and att.get("videoId") and self.client:
+                try:
+                    video_req = await self.client.inner.get_video_by_id(
+                        chat_id=chat_id,
+                        message_id=int(msg_id),
+                        video_id=int(att["videoId"]),
+                    )
+                    if video_req and video_req.url:
+                        media_url = video_req.url
+                        log.debug("Resolved video URL via opcode 83: videoId=%s", att["videoId"])
+                except Exception as e:
+                    log.warning("Failed to resolve video URL for videoId=%s: %s",
+                                att.get("videoId"), e)
+
             if media_url:
                 try:
                     data = await download_media(media_url)
