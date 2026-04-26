@@ -211,3 +211,18 @@ async def download_media(url: str) -> bytes:
         async with session.get(url, headers=UPLOAD_HEADERS) as resp:
             resp.raise_for_status()
             return await resp.read()
+
+
+async def try_download_media(urls: list[str]) -> bytes:
+    """Try to download from a list of candidate URLs, returning the first
+    successful payload. Raises the last error if all candidates fail."""
+    last_exc: Exception | None = None
+    for url in urls:
+        try:
+            return await download_media(url)
+        except Exception as e:
+            _log.debug("Candidate URL failed: %s: %s", url, e)
+            last_exc = e
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("try_download_media: no URLs provided")

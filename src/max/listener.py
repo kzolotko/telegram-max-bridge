@@ -8,7 +8,7 @@ from ..bridge.mirror_tracker import MirrorTracker
 from ..config import ConfigLookup
 from ..types import AppConfig, BridgeEvent, MediaInfo, UserMapping
 from .session import MaxSession
-from .media import download_media
+from .media import download_media, try_download_media
 
 log = logging.getLogger("bridge.max.listener")
 
@@ -641,17 +641,30 @@ class MaxListener:
                                 att.get("fileId"), e)
 
             # VIDEO attachments carry only videoId/token; resolve the playback
-            # URL via VIDEO_PLAY (opcode 83) — safe here (worker context).
+            # URLs via VIDEO_PLAY (opcode 83) — safe here (worker context).
+            # The response contains multiple quality variants (MOBILE/SD/HD/...);
+            # we try each in turn since some may return 400 from the CDN.
+            video_candidates: list[str] = []
             if not media_url and att_type == "VIDEO" and att.get("videoId") and self.client:
                 try:
-                    video_req = await self.client.inner.get_video_by_id(
-                        chat_id=chat_id,
-                        message_id=int(msg_id),
-                        video_id=int(att["videoId"]),
+                    resp = await self.client.inner._send_and_wait(
+                        opcode=83,  # VIDEO_PLAY
+                        payload={
+                            "chatId": chat_id,
+                            "messageId": int(msg_id),
+                            "videoId": int(att["videoId"]),
+                        },
                     )
-                    if video_req and video_req.url:
-                        media_url = video_req.url
-                        log.debug("Resolved video URL via opcode 83: videoId=%s", att["videoId"])
+                    vp = (resp or {}).get("payload") or {}
+                    log.debug("VIDEO_PLAY payload keys for videoId=%s: %s",
+                              att["videoId"], list(vp.keys()))
+                    # Collect every string value that looks like an http(s) URL,
+                    # skipping the EXTERNAL player page and the `cache` bool.
+                    for k, v in vp.items():
+                        if k in ("EXTERNAL", "cache"):
+                            continue
+                        if isinstance(v, str) and v.startswith(("http://", "https://")):
+                            video_candidates.append(v)
                 except Exception as e:
                     log.warning("Failed to resolve video URL for videoId=%s: %s",
                                 att.get("videoId"), e)
@@ -666,6 +679,17 @@ class MaxListener:
                 except Exception as e:
                     log.error("Failed to download %s from %s: %s",
                               att_type, media_url, e, exc_info=True)
+                    failed_labels.append(att_type.capitalize())
+            elif video_candidates:
+                try:
+                    data = await try_download_media(video_candidates)
+                    downloaded.append((
+                        default_evt,
+                        MediaInfo(data=data, filename=fname, mime_type=mime),
+                    ))
+                except Exception as e:
+                    log.error("Failed to download %s from %d candidates: %s",
+                              att_type, len(video_candidates), e, exc_info=True)
                     failed_labels.append(att_type.capitalize())
             else:
                 log.warning("No download URL for %s attachment (keys=%s)",
