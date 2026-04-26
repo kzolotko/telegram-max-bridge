@@ -275,8 +275,32 @@ async def download_media(url: str) -> bytes:
     if ua:
         headers["User-Agent"] = ua
 
+    # OK CDN (okcdn.ru) rejects CORS-like requests with foreign Origin —
+    # strip the MAX-specific CORS/Origin/Referer/Sec-Fetch-* headers for
+    # video CDN hosts. Keep them only for the MAX upload endpoints where
+    # they're needed.
+    host = ""
+    try:
+        from urllib.parse import urlparse
+        host = (urlparse(url).hostname or "").lower()
+    except Exception:
+        pass
+    if "okcdn.ru" in host or "ok.ru" in host:
+        for h in ("Origin", "Referer", "Sec-Fetch-Site", "Sec-Fetch-Mode",
+                  "Accept-Language", "Accept-Encoding"):
+            headers.pop(h, None)
+        headers["Accept"] = "*/*"
+        # Some CDN endpoints require a Range to start streaming.
+        headers.setdefault("Range", "bytes=0-")
+
+    _log.info("download_media GET host=%s srcAg=%s ua=%s",
+              host, src_ag, headers.get("User-Agent", "")[:60])
     async with aiohttp.ClientSession() as session:
         async with session.get(url, headers=headers) as resp:
+            if resp.status >= 400:
+                body = await resp.read()
+                _log.warning("download_media %s -> %d, body[:200]=%r",
+                             url[:120], resp.status, body[:200])
             resp.raise_for_status()
             return await resp.read()
 

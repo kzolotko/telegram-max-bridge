@@ -658,9 +658,7 @@ class MaxListener:
                     )
                     vp = (resp or {}).get("payload") or {}
                     log.info("VIDEO_PLAY payload for videoId=%s: %s",
-                             att["videoId"],
-                             {k: (v if not isinstance(v, str) else v[:120])
-                              for k, v in vp.items()})
+                             att["videoId"], vp)
                     # Collect every string value that looks like a direct CDN
                     # URL. Skip ``cache`` (bool) and ``EXTERNAL`` (m.ok.ru
                     # player webpage — returns HTML, not video bytes).
