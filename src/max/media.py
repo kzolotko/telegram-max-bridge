@@ -206,9 +206,35 @@ async def send_multi_media_message(
 
 
 async def download_media(url: str) -> bytes:
-    """Download media from a MAX CDN URL."""
+    """Download media from a MAX CDN URL.
+
+    OK CDN signs URLs against a User-Agent family encoded in the URL itself
+    (``srcAg=CHROME_ANDROID``/``CHROME``/...). The default UPLOAD_HEADERS use
+    a desktop Chrome UA that works for photo CDN endpoints, but the video
+    CDN (maxvdNNN.okcdn.ru) returns 400 when the UA family doesn't match.
+    Pick a UA that matches the ``srcAg`` parameter when present.
+    """
+    headers = dict(UPLOAD_HEADERS)
+    src_ag = ""
+    try:
+        from urllib.parse import urlparse, parse_qs
+        qs = parse_qs(urlparse(url).query)
+        src_ag = (qs.get("srcAg", [""])[0] or "").upper()
+    except Exception:
+        pass
+
+    if src_ag == "CHROME_ANDROID":
+        headers["User-Agent"] = (
+            "Mozilla/5.0 (Linux; Android 13; Pixel 7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/137.0.0.0 Mobile Safari/537.36"
+        )
+    elif src_ag in ("CHROME_MAC", "CHROME", "CHROME_WIN", "CHROME_LINUX"):
+        # Default UPLOAD_HEADERS already use a desktop Chrome UA — keep it.
+        pass
+
     async with aiohttp.ClientSession() as session:
-        async with session.get(url, headers=UPLOAD_HEADERS) as resp:
+        async with session.get(url, headers=headers) as resp:
             resp.raise_for_status()
             return await resp.read()
 

@@ -657,12 +657,15 @@ class MaxListener:
                         },
                     )
                     vp = (resp or {}).get("payload") or {}
-                    log.debug("VIDEO_PLAY payload keys for videoId=%s: %s",
-                              att["videoId"], list(vp.keys()))
-                    # Collect every string value that looks like an http(s) URL,
-                    # skipping the EXTERNAL player page and the `cache` bool.
+                    log.info("VIDEO_PLAY payload for videoId=%s: %s",
+                             att["videoId"],
+                             {k: (v if not isinstance(v, str) else v[:120])
+                              for k, v in vp.items()})
+                    # Collect every string value that looks like a direct CDN
+                    # URL. Skip ``cache`` (bool) and ``EXTERNAL`` (m.ok.ru
+                    # player webpage — returns HTML, not video bytes).
                     for k, v in vp.items():
-                        if k in ("EXTERNAL", "cache"):
+                        if k in ("cache", "EXTERNAL"):
                             continue
                         if isinstance(v, str) and v.startswith(("http://", "https://")):
                             video_candidates.append(v)
