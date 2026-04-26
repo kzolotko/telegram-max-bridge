@@ -223,15 +223,57 @@ async def download_media(url: str) -> bytes:
     except Exception:
         pass
 
-    if src_ag == "CHROME_ANDROID":
-        headers["User-Agent"] = (
+    UA_MAP = {
+        "CHROME_ANDROID": (
             "Mozilla/5.0 (Linux; Android 13; Pixel 7) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/137.0.0.0 Mobile Safari/537.36"
-        )
-    elif src_ag in ("CHROME_MAC", "CHROME", "CHROME_WIN", "CHROME_LINUX"):
-        # Default UPLOAD_HEADERS already use a desktop Chrome UA — keep it.
-        pass
+        ),
+        "CHROME_MAC": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/137.0.0.0 Safari/537.36"
+        ),
+        "CHROME_WIN": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/137.0.0.0 Safari/537.36"
+        ),
+        "CHROME_LINUX": (
+            "Mozilla/5.0 (X11; Linux x86_64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/137.0.0.0 Safari/537.36"
+        ),
+        "GECKO": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:128.0) "
+            "Gecko/20100101 Firefox/128.0"
+        ),
+        "GECKO_ANDROID": (
+            "Mozilla/5.0 (Android 13; Mobile; rv:128.0) "
+            "Gecko/128.0 Firefox/128.0"
+        ),
+        "SAFARI": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/605.1.15 (KHTML, like Gecko) "
+            "Version/17.0 Safari/605.1.15"
+        ),
+        "SAFARI_IOS": (
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+            "AppleWebKit/605.1.15 (KHTML, like Gecko) "
+            "Version/17.0 Mobile/15E148 Safari/604.1"
+        ),
+    }
+    # Fallback prefix matching: GECKO* → GECKO, CHROME* → CHROME_MAC.
+    ua = UA_MAP.get(src_ag)
+    if not ua:
+        if src_ag.startswith("GECKO"):
+            ua = UA_MAP["GECKO"]
+        elif src_ag.startswith("CHROME"):
+            ua = UA_MAP["CHROME_MAC"]
+        elif src_ag.startswith("SAFARI"):
+            ua = UA_MAP["SAFARI"]
+    if ua:
+        headers["User-Agent"] = ua
 
     async with aiohttp.ClientSession() as session:
         async with session.get(url, headers=headers) as resp:
