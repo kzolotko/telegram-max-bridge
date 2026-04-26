@@ -647,8 +647,9 @@ class MaxListener:
             video_candidates: list[str] = []
             if not media_url and att_type == "VIDEO" and att.get("videoId") and self.client:
                 try:
+                    from pymax.static.enum import Opcode
                     resp = await self.client.inner._send_and_wait(
-                        opcode=83,  # VIDEO_PLAY
+                        opcode=Opcode.VIDEO_PLAY,  # 83
                         payload={
                             "chatId": chat_id,
                             "messageId": int(msg_id),
