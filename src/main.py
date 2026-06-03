@@ -48,6 +48,82 @@ def setup_logging() -> LogRingBuffer:
     return log_buffer
 
 
+async def _run_admin_only(config, bridge_state, tg_pool, max_pool, log_buffer,
+                          message_store, start_time) -> bool:
+    """Degraded startup: no usable users, but admin_bot is configured.
+
+    Bring up ONLY the admin bot so the operator can re-authenticate an account
+    via /authmax (then /restart into full mode).  Without this, logging out the
+    last MAX user would brick the bridge — normal startup raises
+    'No users initialized' before the admin bot is ever started, so there is no
+    in-Telegram path back.  Returns True if /restart was requested.
+    """
+    log.warning(
+        "No users available — starting in DEGRADED mode (admin bot only). "
+        "Use /authmax <user> to re-authenticate, then /restart."
+    )
+    admin_bot = AdminBot(
+        config=config,
+        bridge_state=bridge_state,
+        tg_pool=tg_pool,
+        max_pool=max_pool,
+        tg_listeners=[],
+        max_listeners=[],
+        log_buffer=log_buffer,
+        start_time=start_time,
+    )
+
+    shutdown_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, shutdown_event.set)
+
+    await admin_bot.start(shutdown_event=shutdown_event)
+    log.warning("Admin bot: enabled (DEGRADED mode — no active bridges)")
+    try:
+        await admin_bot.notify_admins(
+            "⚠️ Bridge started in DEGRADED mode: no MAX accounts authenticated.\n"
+            "Use /authmax <user> to re-authenticate, then /restart."
+        )
+    except Exception:
+        pass
+
+    # Heartbeat so the Docker healthcheck keeps the container 'healthy'.
+    health_file = os.path.join(config.sessions_dir, ".healthcheck")
+
+    async def _heartbeat():
+        while not shutdown_event.is_set():
+            try:
+                with open(health_file, "w") as f:
+                    f.write(str(time.time()))
+            except OSError:
+                pass
+            try:
+                await asyncio.wait_for(shutdown_event.wait(), timeout=120)
+            except asyncio.TimeoutError:
+                pass
+
+    hb_task = asyncio.create_task(_heartbeat())
+
+    await shutdown_event.wait()
+    hb_task.cancel()
+    try:
+        await hb_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        os.remove(health_file)
+    except OSError:
+        pass
+
+    await admin_bot.stop()
+    await tg_pool.stop()
+    await max_pool.stop()
+    message_store.stop()
+    log.info("Stopped (degraded mode).")
+    return admin_bot.restart_requested
+
+
 async def main(is_restart: bool = False):
     log_buffer = setup_logging()
     start_time = time.monotonic()
@@ -84,6 +160,13 @@ async def main(is_restart: bool = False):
         )
     users = [u for u in users if u.name in ok_names]
     if not users:
+        if config.admin_bot:
+            # Degraded mode: keep the admin bot reachable so the operator can
+            # /authmax a MAX account and /restart, instead of bricking the bridge.
+            return await _run_admin_only(
+                config, bridge_state, tg_pool, max_pool, log_buffer,
+                message_store, start_time,
+            )
         raise RuntimeError("No users initialized successfully — cannot start bridge.")
 
     # ── Optional bot client (shared by DM bridge + group forwarding) ──────
