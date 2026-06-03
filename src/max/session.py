@@ -12,6 +12,10 @@ class MaxSession:
     def exists(self) -> bool:
         return self.path.exists()
 
+    def delete(self) -> None:
+        """Remove the persisted session file (e.g. after a server-side logout)."""
+        self.path.unlink(missing_ok=True)
+
     def _read(self) -> dict:
         return json.loads(self.path.read_text(encoding="utf-8"))
 

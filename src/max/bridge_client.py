@@ -328,6 +328,28 @@ class BridgeMaxClient:
             return None
         return self._inner._recv_task
 
+    async def logout(self) -> bool:
+        """Invalidate the current login_token server-side (Opcode.LOGOUT).
+
+        Sends LOGOUT on the *live* connection — call this BEFORE disconnect().
+        Unlike disconnect() (which only closes the socket, leaving the token
+        reusable via login_by_token), this makes the token permanently dead;
+        the account must re-auth via SMS afterwards.
+
+        Returns True if the server acknowledged the logout, False on error.
+        Caller is responsible for the subsequent disconnect()/listener stop
+        and for deleting the local session file.
+        """
+        if self._inner is None:
+            return False
+        try:
+            await self._inner._send_and_wait(opcode=Opcode.LOGOUT, payload={})
+            log.info("Sent LOGOUT — token invalidated server-side")
+            return True
+        except Exception:
+            log.exception("LOGOUT opcode failed")
+            return False
+
     async def disconnect(self) -> None:
         """Clean shutdown — cancel all pymax background tasks then close socket."""
         if self._inner is not None:

@@ -8,6 +8,7 @@ configuration, auth, and control of the bridge.
 import logging
 import os
 import re
+import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -94,6 +95,7 @@ class AdminBot:
             ("adduser", self._cmd_adduser),
             ("rmuser", self._cmd_rmuser),
             ("authmax", self._cmd_authmax),
+            ("logoutmax", self._cmd_logoutmax),
             ("authtg", self._cmd_authtg),
             ("config", self._cmd_config),
             ("restart", self._cmd_restart),
@@ -234,6 +236,7 @@ class AdminBot:
             "\n"
             "Authentication:\n"
             "  /authmax <username> — authenticate MAX account\n"
+            "  /logoutmax <username> — log out & invalidate a MAX session\n"
             "  /authtg <username> — authenticate Telegram account\n"
             "\n"
             "System:\n"
@@ -640,6 +643,82 @@ class AdminBot:
             data={"username": username},
         )
         await message.reply_text(f"Enter phone number for MAX auth (e.g. +79991234567):")
+
+    async def _cmd_logoutmax(self, client: PyrogramClient, message: Message):
+        parts = message.text.split(maxsplit=1)
+        if len(parts) < 2:
+            await message.reply_text("Usage: /logoutmax <username>")
+            return
+
+        username = parts[1].strip()
+        if not re.match(r'^[a-z0-9_]+$', username):
+            await message.reply_text("Username must be lowercase letters, digits, underscores.")
+            return
+
+        session = MaxSession(f"max_{username}", self.config.sessions_dir)
+        if not session.exists():
+            await message.reply_text(f"No MAX session for '{username}'.")
+            return
+
+        # Grab device_id before deleting the file (needed for pymax work_dir cleanup).
+        device_id = session.load_device_id()
+        await message.reply_text(f"Logging out MAX session for '{username}'...")
+
+        server_ok = False
+
+        # 1. Prefer the running listener's live connection: send LOGOUT on it,
+        #    then stop the listener so its reconnect loop can't revive the
+        #    now-dead token, and unregister it from the pool.
+        listener = next(
+            (l for l in self.max_listeners if l.user.name == username), None
+        )
+        if listener is not None:
+            try:
+                if listener.client and listener.client.is_connected:
+                    server_ok = await listener.client.logout()
+            except Exception as e:
+                log.warning("MAX logout opcode (listener) failed for %s: %s", username, e)
+            try:
+                await listener.stop()
+            except Exception:
+                pass
+            self.max_pool._listeners.pop(listener.user.max_user_id, None)
+            try:
+                self.max_listeners.remove(listener)
+            except ValueError:
+                pass
+        else:
+            # 2. No running listener — invalidate via a one-off connection.
+            try:
+                token = session.load()
+                if token and device_id:
+                    tmp = BridgeMaxClient(token=token, device_id=device_id,
+                                          sessions_dir=self.config.sessions_dir)
+                    await tmp.connect_and_login()
+                    server_ok = await tmp.logout()
+                    await tmp.disconnect()
+            except Exception as e:
+                log.warning("MAX logout via one-off connection failed for %s: %s", username, e)
+
+        # 3. Delete the local session file and pymax work_dir.
+        session.delete()
+        if device_id:
+            shutil.rmtree(
+                Path(self.config.sessions_dir) / "pymax" / device_id,
+                ignore_errors=True,
+            )
+
+        status = (
+            "server token invalidated"
+            if server_ok
+            else "server logout NOT confirmed (token may have been dead already)"
+        )
+        await message.reply_text(
+            f"MAX session for '{username}' logged out.\n"
+            f"  {status}\n"
+            f"  Local session deleted.\n"
+            f"Re-authenticate with /authmax {username}."
+        )
 
     async def _cmd_authtg(self, client: PyrogramClient, message: Message):
         parts = message.text.split(maxsplit=1)
