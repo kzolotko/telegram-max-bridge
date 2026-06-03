@@ -1366,53 +1366,105 @@ class AdminBot:
 
             account_data = await native.sign_in(sms_token, int(text))
 
-            password_challenge = account_data.get("passwordChallenge")
             login_attrs = account_data.get("tokenAttrs", {}).get("LOGIN", {})
+            password_challenge = account_data.get("passwordChallenge")
 
-            if password_challenge and not login_attrs:
-                await native.close()
-                self._conversations.pop(uid, None)
-                await message.reply_text("MAX account has 2FA enabled. Not supported yet.")
+            # ── 2FA: server demands the account password before issuing a token
+            if not login_attrs and password_challenge:
+                track_id = password_challenge.get("trackId")
+                if not track_id:
+                    await native.close()
+                    conv.client = None
+                    self._conversations.pop(uid, None)
+                    await message.reply_text(
+                        "2FA challenge has no trackId — cannot continue."
+                    )
+                    return
+                conv.data["track_id"] = track_id
+                conv.step = "password"
+                hint = password_challenge.get("hint")
+                hint_str = f" (hint: {hint})" if hint else ""
+                await message.reply_text(
+                    f"This MAX account has 2FA enabled.\n"
+                    f"Enter your account password{hint_str}:"
+                )
                 return
 
             login_token = login_attrs.get("token")
             if not login_token:
                 await native.close()
+                conv.client = None
                 self._conversations.pop(uid, None)
                 await message.reply_text(
                     f"No login token in response. Keys: {list(account_data.keys())}"
                 )
                 return
 
-            session = MaxSession(f"max_{username}", self.config.sessions_dir)
-            max_user_id = _extract_max_user_id(account_data, session)
-            device_id = native.device_id
-
-            # If no user_id from sign_in, try login_by_token
-            if not max_user_id:
-                try:
-                    session.save(login_token, user_id=None, device_id=device_id)
-                    login_native = NativeMaxAuth()
-                    try:
-                        login_resp = await login_native.login_by_token(login_token)
-                        login_payload = login_resp.get("payload", {}) or {}
-                        max_user_id = _extract_max_user_id(login_payload, session)
-                    finally:
-                        await login_native.close()
-                except Exception as e:
-                    log.warning("login_by_token for user_id failed: %s", e)
-
-            session.save(login_token, user_id=max_user_id, device_id=device_id)
-            await native.close()
-            conv.client = None
-            self._conversations.pop(uid, None)
-
-            uid_str = str(max_user_id) if max_user_id else "unknown"
-            await message.reply_text(
-                f"MAX auth successful for '{username}'.\n"
-                f"  User ID: {uid_str}\n"
-                f"  Session saved."
+            await self._finalize_max_auth(
+                message, conv, native, username, login_token, account_data,
             )
+
+        elif conv.step == "password":
+            native = conv.client
+            track_id = conv.data["track_id"]
+
+            result = await native.check_password(track_id, text.strip())
+            login_attrs = result.get("tokenAttrs", {}).get("LOGIN", {})
+            login_token = login_attrs.get("token")
+
+            if not login_token:
+                # Wrong password (or other error) — stay in this step and retry.
+                err = result.get("error")
+                if err:
+                    await message.reply_text(f"Password rejected ({err}). Try again:")
+                else:
+                    await message.reply_text("Incorrect password. Try again:")
+                return
+
+            await self._finalize_max_auth(
+                message, conv, native, username, login_token, result,
+            )
+
+    async def _finalize_max_auth(self, message: Message, conv: ConversationState,
+                                 native, username: str, login_token: str,
+                                 payload: dict):
+        """Resolve the MAX user_id, persist the session and end the conversation.
+
+        Shared by the plain-SMS and 2FA branches of /authmax.  *payload* is the
+        response dict that carried the LOGIN token (sign_in result or
+        check_password result) — used to extract the user_id.
+        """
+        uid = message.from_user.id
+        session = MaxSession(f"max_{username}", self.config.sessions_dir)
+        max_user_id = _extract_max_user_id(payload, session)
+        device_id = native.device_id
+
+        # If no user_id in the auth payload, log in by token to discover it.
+        if not max_user_id:
+            try:
+                session.save(login_token, user_id=None, device_id=device_id)
+                login_native = NativeMaxAuth()
+                try:
+                    login_resp = await login_native.login_by_token(login_token)
+                    login_payload = login_resp.get("payload", {}) or {}
+                    max_user_id = _extract_max_user_id(login_payload, session)
+                finally:
+                    await login_native.close()
+            except Exception as e:
+                log.warning("login_by_token for user_id failed: %s", e)
+
+        session.save(login_token, user_id=max_user_id, device_id=device_id)
+        await native.close()
+        conv.client = None
+        self._conversations.pop(uid, None)
+
+        uid_str = str(max_user_id) if max_user_id else "unknown"
+        await message.reply_text(
+            f"MAX auth successful for '{username}'.\n"
+            f"  User ID: {uid_str}\n"
+            f"  Session saved.\n"
+            f"Use /restart to bring the bridge into full mode."
+        )
 
     # ── Auth TG Conversation ─────────────────────────────────────────────────
 

@@ -36,6 +36,7 @@ OP_SESSION_INIT = 6
 OP_AUTH_REQUEST = 17
 OP_AUTH = 18
 OP_LOGIN = 19
+OP_CHECK_PASSWORD = 115  # AUTH_LOGIN_CHECK_PASSWORD (2FA)
 
 OS_VERSIONS = [
     "Windows 10", "Windows 11",
@@ -166,6 +167,17 @@ class NativeMaxAuth:
             )
 
         return p
+
+    async def check_password(self, track_id: str, password: str) -> dict[str, Any]:
+        """Submit a 2FA password (opcode 115). Returns the response payload.
+
+        On the happy path the payload contains ``tokenAttrs.LOGIN.token``.
+        On a wrong password the server returns an ``error`` field instead — the
+        payload is returned as-is (not raised) so the caller can re-prompt.
+        """
+        payload = {"trackId": track_id, "password": password}
+        resp = await self._send_and_wait(OP_CHECK_PASSWORD, payload)
+        return resp.get("payload", {})
 
     async def login_by_token(self, token: str, device_id: str | None = None
                             ) -> dict[str, Any]:
