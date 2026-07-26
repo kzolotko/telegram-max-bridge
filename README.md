@@ -277,18 +277,38 @@ Docker Compose уже настроен для production:
 ### Запуск и обновление
 
 ```bash
-# запуск / пересборка
+# запуск / пересборка (на сервере)
 ssh kzolotko@158.160.255.51
 cd /opt/telegram-max-bridge
 sudo docker compose -f docker-compose.yml -f docker-compose.server.yml up -d --build
-
-# обновление кода
-sudo git pull && sudo docker compose -f docker-compose.yml -f docker-compose.server.yml up -d --build
 
 # логи / статус
 sudo docker compose logs -f --tail=100 bridge
 sudo docker ps --filter name=telegram-max-bridge
 ```
+
+**Выкладка кода — с рабочей машины через rsync.** У сервера нет доступа к GitHub
+(ни host key, ни ключа для `git@github.com`), поэтому `git pull` там не работает.
+Каталог остаётся полноценным git-checkout'ом, просто обновляется извне:
+
+```bash
+# из корня репозитория на рабочей машине
+rsync -az --delete \
+  --exclude 'sessions/' \
+  --exclude 'config/config.yaml' \
+  --exclude 'config/credentials.yaml' \
+  --exclude 'config/e2e_config.yaml' \
+  --exclude '__pycache__/' --exclude '.pytest_cache/' \
+  --exclude '.DS_Store' --exclude '.venv/' \
+  ./ kzolotko@158.160.255.51:/opt/telegram-max-bridge/
+
+ssh kzolotko@158.160.255.51 'cd /opt/telegram-max-bridge && \
+  sudo docker compose -f docker-compose.yml -f docker-compose.server.yml up -d --build'
+```
+
+Исключения обязательны: без них rsync затрёт серверные сессии и конфиг.
+Если понадобится `git pull` на сервере — завести deploy key в GitHub и добавить
+`github.com` в `known_hosts`.
 
 > ⚠️ **Никогда не запускать бридж в двух местах одновременно.** Одна и та же
 > Pyrogram-сессия, используемая с двух адресов, получает `AUTH_KEY_DUPLICATED`, и
