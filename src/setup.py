@@ -27,7 +27,7 @@ from pyrogram.enums import ChatType
 from .max.native_client import NativeMaxAuth
 from .max.bridge_client import BridgeMaxClient
 from .max.session import MaxSession
-from .config import load_credentials, migrate_config
+from .config import load_credentials, load_telegram_proxy, migrate_config
 
 
 SEP = "─" * 60
@@ -270,6 +270,7 @@ async def auth_one_user(
         api_id=api_id,
         api_hash=api_hash,
         workdir=sessions_dir,
+        proxy=load_telegram_proxy(),
     )
     if tg_session_path.exists():
         print(f"  Telegram session already exists — verifying...")
@@ -370,6 +371,7 @@ async def _reauth_user(
             api_id=api_id,
             api_hash=api_hash,
             workdir=sessions_dir,
+            proxy=load_telegram_proxy(),
         )
         try:
             await tg_client.start()
@@ -551,6 +553,7 @@ async def _load_tg_chats_for_user(
             api_id=api_id,
             api_hash=api_hash,
             workdir=sessions_dir,
+            proxy=load_telegram_proxy(),
         )
         await client.start()
         tg_chats = []
@@ -636,6 +639,7 @@ async def _verify_tg_membership(
             api_id=api_id,
             api_hash=api_hash,
             workdir=sessions_dir,
+            proxy=load_telegram_proxy(),
         )
         await tg_client.start()
         # Warm up Pyrogram's peer cache — without this, get_chat() fails
@@ -925,6 +929,7 @@ async def _add_user_flow(api_id: int, api_hash: str, existing_users: list[dict])
         api_id=api_id,
         api_hash=api_hash,
         workdir=SESSIONS_DIR,
+        proxy=load_telegram_proxy(),
     )
     if tg_session_path.exists():
         print(f"  Telegram session already exists — verifying...")

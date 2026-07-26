@@ -11,7 +11,7 @@ import time
 
 from pyrogram import Client as PyrogramClient
 
-from .config import load_config, ConfigLookup
+from .config import load_config, load_telegram_proxy, ConfigLookup
 from .message_store import MessageStore
 from .bridge.mirror_tracker import MirrorTracker
 from .bridge.bridge import Bridge
@@ -182,6 +182,7 @@ async def main(is_restart: bool = False):
             api_hash=config.api_hash,
             bot_token=config.bot_bridge.bot_token,
             workdir=config.sessions_dir,
+            proxy=load_telegram_proxy(),
         )
         await bot_client.start()
         bot_me = await bot_client.get_me()

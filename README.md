@@ -253,6 +253,60 @@ Docker Compose уже настроен для production:
 
 ---
 
+## Развёртывание на сервере (Yandex Cloud RU)
+
+Продакшн-инстанс живёт в `/opt/telegram-max-bridge` на RU-сервере
+(`kzolotko@158.160.255.51`, `docker` через `sudo`).
+
+### Telegram через SOCKS-прокси
+
+Из этого датацентра **Telegram напрямую недоступен** — все MTProto-DC отдают отказ
+на TCP:443. На хосте уже поднят SOCKS для этой же цели (`socat 127.0.0.1:1081` →
+`xray 127.0.0.1:1080`), которым пользуются marzban и ovpn-сервисы.
+
+Прокси задаётся переменной `TELEGRAM_PROXY` в формате
+`scheme://[user:pass@]host:port` (схемы: `socks5`, `socks4`, `http`) и применяется
+**только к Pyrogram**. MAX (`web.max.ru`) из РФ доступен напрямую (~40 мс) и
+намеренно не проксируется. Если переменная не задана — прокси не используется,
+поэтому локальный запуск не меняется.
+
+Оба listener'а прокси слушают только loopback, поэтому контейнер запускается с
+`network_mode: host` — это же соглашение у остальных сервисов на хосте. Всё это
+собрано в оверлее `docker-compose.server.yml`.
+
+### Запуск и обновление
+
+```bash
+# запуск / пересборка
+ssh kzolotko@158.160.255.51
+cd /opt/telegram-max-bridge
+sudo docker compose -f docker-compose.yml -f docker-compose.server.yml up -d --build
+
+# обновление кода
+sudo git pull && sudo docker compose -f docker-compose.yml -f docker-compose.server.yml up -d --build
+
+# логи / статус
+sudo docker compose logs -f --tail=100 bridge
+sudo docker ps --filter name=telegram-max-bridge
+```
+
+> ⚠️ **Никогда не запускать бридж в двух местах одновременно.** Одна и та же
+> Pyrogram-сессия, используемая с двух адресов, получает `AUTH_KEY_DUPLICATED`, и
+> тогда потребуется полный перелогин. Перед запуском на сервере локальный
+> инстанс должен быть остановлен (и наоборот).
+
+### Перенос состояния между хостами
+
+`sessions/` и `config/` — это всё состояние. Порядок важен:
+
+1. Остановить инстанс-источник (`docker compose down`) — иначе SQLite `bridge.db`
+   скопируется с незакоммиченным WAL, а сессии — недописанными.
+2. Скопировать `config/` и `sessions/` целиком, включая `bridge.db-wal` и
+   `bridge.db-shm` и каталог `pymax/`.
+3. Запустить на приёмнике и убедиться, что в логах нет запросов авторизации.
+
+---
+
 ## Все команды
 
 | Команда | Описание |

@@ -1,12 +1,73 @@
 import logging
+import os
 import shutil
 from pathlib import Path
+from urllib.parse import urlparse
 
 import yaml
 
 from .types import AdminBotConfig, AppConfig, BridgeEntry, BotBridgeConfig, UserMapping
 
 _log = logging.getLogger("bridge.config")
+
+
+# ── Telegram proxy ───────────────────────────────────────────────────────────
+# Deployment-level setting, not part of the bridge topology: some hosts cannot
+# reach Telegram's MTProto endpoints directly (e.g. RU datacenters), so they
+# supply a SOCKS/HTTP proxy via the TELEGRAM_PROXY env var.  Applies to Pyrogram
+# only — MAX traffic is never proxied and always goes direct.
+
+TELEGRAM_PROXY_ENV = "TELEGRAM_PROXY"
+
+# Schemes Pyrogram can map onto PySocks constants (socks.SOCKS4/SOCKS5/HTTP).
+_PROXY_SCHEMES = ("socks4", "socks5", "http")
+
+_proxy_cached: dict | None = None
+_proxy_resolved = False
+
+
+def load_telegram_proxy() -> dict | None:
+    """Build a Pyrogram ``proxy`` dict from ``$TELEGRAM_PROXY``, or None if unset.
+
+    Format: ``scheme://[user:pass@]host:port`` — e.g. ``socks5://127.0.0.1:1081``.
+    Result is cached, so passing it at every ``Client(...)`` call site is cheap
+    and logs only once.
+    """
+    global _proxy_cached, _proxy_resolved
+    if _proxy_resolved:
+        return _proxy_cached
+
+    _proxy_resolved = True
+    raw = (os.environ.get(TELEGRAM_PROXY_ENV) or "").strip()
+    if not raw:
+        _proxy_cached = None
+        return None
+
+    parsed = urlparse(raw)
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in _PROXY_SCHEMES:
+        raise ValueError(
+            f"{TELEGRAM_PROXY_ENV} has unsupported scheme {parsed.scheme!r}. "
+            f"Expected one of: {', '.join(_PROXY_SCHEMES)}"
+        )
+    if not parsed.hostname or not parsed.port:
+        raise ValueError(
+            f"{TELEGRAM_PROXY_ENV} must include host and port, e.g. "
+            f"socks5://127.0.0.1:1081 (got {raw!r})"
+        )
+
+    proxy = {"scheme": scheme, "hostname": parsed.hostname, "port": parsed.port}
+    if parsed.username:
+        proxy["username"] = parsed.username
+    if parsed.password:
+        proxy["password"] = parsed.password
+
+    _log.info(
+        "Telegram traffic via %s proxy %s:%d (MAX stays direct)",
+        scheme, parsed.hostname, parsed.port,
+    )
+    _proxy_cached = proxy
+    return proxy
 
 
 def load_credentials(credentials_path: str | None = None) -> dict:

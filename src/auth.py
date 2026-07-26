@@ -10,7 +10,7 @@ from pathlib import Path
 
 from pyrogram import Client
 
-from .config import load_config, ConfigLookup
+from .config import load_config, load_telegram_proxy, ConfigLookup
 from .max.session import MaxSession
 from .max.native_client import NativeMaxAuth
 from .max.bridge_client import BridgeMaxClient
@@ -22,7 +22,8 @@ async def auth_telegram(session_name: str, api_id: int, api_hash: str, sessions_
     if session_path.exists():
         print(f"  Telegram session '{session_name}' already exists. Skipping.")
         # Verify it works
-        client = Client(name=session_name, api_id=api_id, api_hash=api_hash, workdir=sessions_dir)
+        client = Client(name=session_name, api_id=api_id, api_hash=api_hash, workdir=sessions_dir,
+                        proxy=load_telegram_proxy())
         await client.start()
         me = await client.get_me()
         print(f"  Verified: @{me.username} ({me.first_name})")
@@ -31,7 +32,8 @@ async def auth_telegram(session_name: str, api_id: int, api_hash: str, sessions_
 
     print(f"  Authenticating Telegram session '{session_name}'...")
     print("  You will be asked for your phone number and a verification code.")
-    client = Client(name=session_name, api_id=api_id, api_hash=api_hash, workdir=sessions_dir)
+    client = Client(name=session_name, api_id=api_id, api_hash=api_hash, workdir=sessions_dir,
+                    proxy=load_telegram_proxy())
     await client.start()
     me = await client.get_me()
     print(f"  Authenticated as @{me.username} ({me.first_name})")

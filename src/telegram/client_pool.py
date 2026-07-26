@@ -2,6 +2,7 @@ import logging
 
 from pyrogram import Client
 
+from ..config import load_telegram_proxy
 from ..types import AppConfig, UserMapping
 
 log = logging.getLogger("bridge.tg.pool")
@@ -24,6 +25,7 @@ class TelegramClientPool:
                 api_id=self.config.api_id,
                 api_hash=self.config.api_hash,
                 workdir=self.config.sessions_dir,
+                proxy=load_telegram_proxy(),
             )
             try:
                 await client.start()

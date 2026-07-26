@@ -1,0 +1,25 @@
+# Server overlay — Yandex Cloud RU host (158.160.255.51).
+#
+# Why a proxy: Telegram's MTProto endpoints are unreachable from that
+# datacenter.  Verified 2026-07-26 — all four DC IPs fail on TCP:443, while the
+# same request through the host's SOCKS proxy succeeds.  The host already runs
+# that proxy for exactly this reason (socat 127.0.0.1:1081 → xray 127.0.0.1:1080);
+# the marzban and ovpn services on the same box use it too.
+#
+# Why host networking: both proxy listeners are bound to loopback only, so a
+# bridge-network container cannot reach them. Sharing the host network namespace
+# is also the convention for the other services on this host.
+#
+# MAX (web.max.ru) resolves and responds directly from this host (~40 ms) and is
+# deliberately NOT proxied — only Pyrogram receives the proxy setting.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.server.yml up -d --build
+
+services:
+  bridge:
+    network_mode: host
+
+    environment:
+      - TZ=Europe/Moscow
+      - TELEGRAM_PROXY=socks5://127.0.0.1:1081

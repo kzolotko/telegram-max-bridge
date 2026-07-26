@@ -20,6 +20,7 @@ from pyrogram.handlers import MessageHandler
 from pyrogram.types import Message
 
 from .bridge_state import BridgeState
+from .config import load_telegram_proxy
 from .log_buffer import LogRingBuffer
 from .max.bridge_client import BridgeMaxClient
 from .max.native_client import NativeMaxAuth
@@ -74,6 +75,7 @@ class AdminBot:
             api_hash=config.api_hash,
             bot_token=config.admin_bot.bot_token,
             workdir=config.sessions_dir,
+            proxy=load_telegram_proxy(),
         )
 
     async def start(self, shutdown_event=None):
@@ -740,6 +742,7 @@ class AdminBot:
                     api_id=self.config.api_id,
                     api_hash=self.config.api_hash,
                     workdir=self.config.sessions_dir,
+                    proxy=load_telegram_proxy(),
                 )
                 await test_client.start()
                 me = await test_client.get_me()
@@ -1481,6 +1484,7 @@ class AdminBot:
                 api_id=self.config.api_id,
                 api_hash=self.config.api_hash,
                 workdir=self.config.sessions_dir,
+                proxy=load_telegram_proxy(),
             )
             await tg_client.connect()
             sent_code = await tg_client.send_code(phone)
