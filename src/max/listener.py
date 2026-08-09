@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 from typing import Callable, Awaitable, Any
 
 from .bridge_client import BridgeMaxClient
@@ -306,6 +307,15 @@ class MaxListener:
             if not loaded:
                 log.warning("Could not preload members for chat %s after 3 attempts "
                             "(names will be resolved on demand)", chat_id)
+
+        if os.getenv("VIDEO_PROBE") == "1":
+            # Diagnostic only — dumps what VIDEO_PLAY actually returns for a
+            # recent video so the download path can be built against real data.
+            try:
+                from .video_probe import probe_recent_video
+                await probe_recent_video(self.client, sorted(max_chat_ids))
+            except Exception as e:
+                log.warning("Video probe failed: %s", e, exc_info=True)
 
     async def _resolve_sender_name(self, sender_id: int) -> str:
         """Resolve display name for a MAX user ID.

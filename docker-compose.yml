@@ -9,6 +9,13 @@ services:
 
     environment:
       - TZ=Europe/Moscow
+      # Diagnostic: dump VIDEO_PLAY payload for a recent MAX video at startup.
+      - VIDEO_PROBE=${VIDEO_PROBE:-0}
+      # Device type declared in the MAX login handshake (DESKTOP/ANDROID/IOS).
+      - MAX_DEVICE_TYPE=${MAX_DEVICE_TYPE:-DESKTOP}
+      # Client version claimed to MAX; MAX refuses new auth from stale clients.
+      - MAX_APP_VERSION=${MAX_APP_VERSION:-}
+      - MAX_BUILD_NUMBER=${MAX_BUILD_NUMBER:-}
 
     security_opt:
       - no-new-privileges:true

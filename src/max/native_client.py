@@ -19,7 +19,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import ssl
-from random import choice, randint
 from typing import Any
 from uuid import uuid4
 
@@ -38,37 +37,10 @@ OP_AUTH = 18
 OP_LOGIN = 19
 OP_CHECK_PASSWORD = 115  # AUTH_LOGIN_CHECK_PASSWORD (2FA)
 
-OS_VERSIONS = [
-    "Windows 10", "Windows 11",
-    "macOS Monterey", "macOS Ventura", "macOS Sonoma",
-    "Ubuntu 22.04", "Fedora 38",
-]
-
-TIMEZONES = [
-    "Europe/Moscow", "Europe/Kaliningrad", "Europe/Samara",
-    "Asia/Yekaterinburg", "Asia/Novosibirsk", "Asia/Krasnoyarsk",
-    "Asia/Irkutsk", "Asia/Vladivostok",
-]
-
-
 def _default_user_agent() -> dict[str, Any]:
-    return {
-        "deviceType": "DESKTOP",
-        "locale": "ru",
-        "deviceLocale": "ru",
-        "osVersion": choice(OS_VERSIONS),
-        "deviceName": "vkmax Python",
-        "headerUserAgent": (
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/137.0.0.0 Safari/537.36"
-        ),
-        "appVersion": "25.12.14",
-        "screen": "1080x1920 1.0x",
-        "timezone": choice(TIMEZONES),
-        "clientSessionId": randint(1, 15),
-        "buildNumber": 0x97CB,
-    }
+    """Handshake/login user agent — see ``device_profile`` for why it's shared."""
+    from .device_profile import user_agent_dict
+    return user_agent_dict()
 
 
 class NativeMaxAuth:

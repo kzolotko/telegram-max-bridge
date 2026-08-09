@@ -90,6 +90,12 @@ class Bridge:
         except Exception as e:
             log.error("Error %s %s: %s", event.direction, event.event_type, e,
                       exc_info=True)
+        else:
+            # Successful forwards are otherwise invisible at INFO — only
+            # failures used to show up, so a working bridge looked identical
+            # to a silently broken one.  Message text stays at debug level.
+            log.info("Forwarded %s %s (%s)", event.direction,
+                     event.event_type, event.bridge_entry.name)
 
     # ── TG → MAX ─────────────────────────────────────────────────────────────
 

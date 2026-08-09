@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,8 @@ from pymax import SocketMaxClient
 from pymax.payloads import UserAgentPayload
 from pymax.static.enum import Opcode
 
+from .device_profile import user_agent_dict
+
 # Apply runtime patch for pymax LZ4 buffer-size bug (see _pymax_patch.py).
 from . import _pymax_patch as _  # noqa: F401
 
@@ -25,6 +28,32 @@ log = logging.getLogger("bridge.max.client")
 
 # Dummy phone — required by PyMax constructor but unused for token auth.
 _DUMMY_PHONE = "+70000000000"
+
+def build_user_agent() -> UserAgentPayload:
+    """Build the runtime handshake user agent.
+
+    Always built here rather than left to pymax's defaults: pymax claims an
+    outdated ``appVersion``, and MAX hands outdated clients video URLs the OK
+    CDN refuses (see ``device_profile``).  The device type must also match the
+    one used at authentication time, or MAX rejects the token with
+    ``FAIL_WRONG_PASSWORD``.
+    """
+    ua = user_agent_dict()
+    log.info("MAX handshake: device=%s appVersion=%s build=%s",
+             ua["deviceType"], ua["appVersion"], ua["buildNumber"])
+    return UserAgentPayload(
+        device_type=ua["deviceType"],
+        device_name=ua["deviceName"],
+        os_version=ua["osVersion"],
+        screen=ua["screen"],
+        header_user_agent=ua["headerUserAgent"],
+        locale=ua["locale"],
+        device_locale=ua["deviceLocale"],
+        app_version=ua["appVersion"],
+        timezone=ua["timezone"],
+        client_session_id=ua["clientSessionId"],
+        build_number=ua["buildNumber"],
+    )
 
 
 class BridgeMaxClient:
@@ -77,6 +106,7 @@ class BridgeMaxClient:
             send_fake_telemetry=False,
             reconnect=False,
             work_dir=self._work_dir,
+            headers=build_user_agent(),
         )
         # Silence PyMax's own logger to avoid duplicate output
         self._inner.logger.setLevel(logging.WARNING)
