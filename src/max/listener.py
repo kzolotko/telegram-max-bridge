@@ -7,6 +7,7 @@ from .bridge_client import BridgeMaxClient
 from ..bridge.formatting import max_elements_to_internal
 from ..bridge.mirror_tracker import MirrorTracker
 from ..config import ConfigLookup
+from ..dedup import SeenIds
 from ..types import AppConfig, BridgeEvent, MediaInfo, UserMapping
 from .session import MaxSession
 from .media import download_media, try_download_media
@@ -55,6 +56,9 @@ class MaxListener:
         self._worker_task: asyncio.Task | None = None
         self._packet_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self._name_cache: dict[int, str] = {}  # max_user_id -> display name
+        # Duplicate suppression: a resumed MAX session can replay packets the
+        # previous connection already delivered (reconnects happen daily).
+        self._seen = SeenIds(f"max:{user.name}")
         # Set of all known group/channel chat IDs (for DM detection)
         self._known_group_ids: set[int] = set()
 
@@ -496,6 +500,9 @@ class MaxListener:
         if not chat_id or not sender_id:
             return
 
+        if msg_id and self._seen.seen(("msg", chat_id, msg_id)):
+            return
+
         if msg_id and self.mirrors.is_max_mirror(msg_id):
             log.debug("MAX msg %s → is mirror, skipping", msg_id)
             return
@@ -728,6 +735,10 @@ class MaxListener:
         if not chat_id or not sender_id or not msg_id:
             return
 
+        if status not in ("EDITED", "REMOVED") and self._seen.seen(
+                ("dm", chat_id, msg_id)):
+            return
+
         # Echo prevention: rely on MirrorTracker.
         # In MAX DMs, the notification arrives at the SENDER's connection,
         # so sender_id == self._my_user_id is the normal case for outgoing DMs.
@@ -828,6 +839,14 @@ class MaxListener:
     async def _handle_notif_edit(self, chat_id, message: dict, msg_id: str, sender_id):
         if not chat_id or not msg_id:
             return
+        # A message can be edited repeatedly, so the key carries the revision:
+        # MAX's update timestamp plus the new text.
+        if self._seen.seen((
+            "edit", chat_id, msg_id,
+            message.get("updateTime") or message.get("time") or 0,
+            hash(message.get("text") or ""),
+        )):
+            return
         if self.mirrors.is_max_mirror(msg_id):
             return
         bridge_entry = self.lookup.get_primary_by_max(chat_id)
@@ -858,6 +877,8 @@ class MaxListener:
             return
         for mid in message_ids:
             if mid is None:
+                continue
+            if self._seen.seen(("del", chat_id, str(mid))):
                 continue
             log.debug("MAX delete: chat=%s msg=%s", chat_id, mid)
             await self.on_event(BridgeEvent(

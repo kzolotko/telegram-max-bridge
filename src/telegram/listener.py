@@ -10,6 +10,7 @@ from pyrogram.raw.types import UpdateMessageReactions, PeerChannel, PeerChat, Re
 from ..bridge.formatting import MIRROR_MARKER, tg_entities_to_internal
 from ..bridge.mirror_tracker import MirrorTracker
 from ..config import ConfigLookup
+from ..dedup import SeenIds
 from ..types import AppConfig, BridgeEvent, MediaInfo, UserMapping
 
 # Delay (seconds) to wait for more album messages after the last received one.
@@ -44,6 +45,10 @@ class TelegramListener:
         self.user = user
         self._bot_user_id: int | None = bot_user_id
         self._remap_bot_msg = remap_bot_msg
+        # Duplicate suppression: Telegram redelivers unacknowledged updates
+        # when the connection degrades and Pyrogram dispatches every copy,
+        # which used to mirror one TG message to MAX several times.
+        self._seen = SeenIds(f"tg:{user.name}")
         # Cache: tg_msg_id → chat_id, for delete events in regular groups
         # where Pyrogram does not include chat info in the callback.
         self._msg_chat_cache: dict[int, int] = {}
@@ -90,6 +95,11 @@ class TelegramListener:
 
     async def _handle_message(self, client: Client, message: Message):
         try:
+            # Redelivery guard — must run before any await so two dispatcher
+            # tasks handling the same redelivered update cannot both pass.
+            if self._seen.seen(("msg", message.chat.id, message.id)):
+                return
+
             # MirrorTracker check (works reliably for supergroups)
             if self.mirrors.is_tg_mirror(message.id):
                 log.debug("TG msg %s → is mirror (tracker), skipping", message.id)
@@ -447,6 +457,15 @@ class TelegramListener:
 
     async def _handle_edited_message(self, client: Client, message: Message):
         try:
+            # Same message can legitimately be edited many times, so the key
+            # carries the revision: edit timestamp plus the new text.
+            edit_rev = int(message.edit_date.timestamp()) if message.edit_date else 0
+            if self._seen.seen((
+                "edit", message.chat.id, message.id, edit_rev,
+                hash(message.text or message.caption or ""),
+            )):
+                return
+
             if self.mirrors.is_tg_mirror(message.id):
                 return
 
@@ -491,6 +510,9 @@ class TelegramListener:
                     continue
                 bridge_entry = self.lookup.get_primary_by_tg(chat_id)
                 if not bridge_entry:
+                    continue
+
+                if self._seen.seen(("del", chat_id, message.id)):
                     continue
 
                 await self.on_event(BridgeEvent(
