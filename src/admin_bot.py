@@ -5,6 +5,7 @@ Separate bot (own token) that provides commands for monitoring,
 configuration, auth, and control of the bridge.
 """
 
+import asyncio
 import logging
 import os
 import re
@@ -31,6 +32,10 @@ from .types import AppConfig
 log = logging.getLogger("bridge.admin")
 
 CONFIG_FILE = "config/config.yaml"
+
+# Upper bound on the MAX round-trip that /authmax makes before starting the
+# re-auth conversation.
+SESSION_PROBE_TIMEOUT = 30  # seconds
 
 
 @dataclass
@@ -115,9 +120,31 @@ class AdminBot:
             )),
         )
 
+        # Trace every inbound message before the filtered handlers see it.
+        # Runs in an earlier group, so it never competes with them.  Without
+        # this there is no way to tell "the update never arrived" from "it
+        # arrived and a filter dropped it" — the 2026-09-04 incident, where a
+        # silent /authmax could not be diagnosed from the logs at all.
+        self.bot.add_handler(MessageHandler(self._trace_incoming), group=-1)
+
         await self.bot.start()
         me = await self.bot.get_me()
         log.info("Admin bot started: @%s (ID: %d)", me.username, me.id)
+
+    async def _trace_incoming(self, client: PyrogramClient, message: Message):
+        """Log every message the bot receives, and why it may be ignored."""
+        uid = message.from_user.id if message.from_user else None
+        chat_type = message.chat.type.value if message.chat else "?"
+        text = (message.text or message.caption or "")[:64]
+        if uid not in self._admin_ids:
+            log.warning("Admin bot: ignoring message from non-admin %s (%s): %r",
+                        uid, chat_type, text)
+        elif chat_type != "private":
+            log.warning("Admin bot: ignoring message from admin %s in %s chat — "
+                        "commands only work in a direct message: %r",
+                        uid, chat_type, text)
+        else:
+            log.info("Admin bot: received from %s: %r", uid, text)
 
     async def notify_admins(self, text: str):
         """Send a message to all admin users."""
@@ -618,24 +645,44 @@ class AdminBot:
             await message.reply_text("Username must be lowercase letters, digits, underscores.")
             return
 
-        # Check if session already exists
+        # Check if session already exists.  The probe talks to MAX, so answer
+        # first — otherwise the command looks dead while it runs.
         session = MaxSession(f"max_{username}", self.config.sessions_dir)
         if session.exists():
+            await message.reply_text(f"Checking the existing MAX session for '{username}'...")
             try:
                 token = session.load()
                 device_id = session.load_device_id()
                 if token and device_id:
                     test_client = BridgeMaxClient(token=token, device_id=device_id,
                                                      sessions_dir=self.config.sessions_dir)
-                    await test_client.connect_and_login()
-                    uid = test_client.inner.me.id if test_client.inner.me else session.load_user_id()
-                    await test_client.disconnect()
+                    try:
+                        # Bounded: a dead token can leave the probe hanging, and
+                        # a hung probe silently kills the one command that
+                        # recovers from a dead token.
+                        await asyncio.wait_for(test_client.connect_and_login(),
+                                               timeout=SESSION_PROBE_TIMEOUT)
+                        uid = (test_client.inner.me.id if test_client.inner.me
+                               else session.load_user_id())
+                    finally:
+                        try:
+                            await test_client.disconnect()
+                        except Exception:
+                            pass
                     await message.reply_text(
                         f"MAX session for '{username}' is already valid (ID: {uid}).\n"
                         f"To re-authenticate, delete the session file first."
                     )
                     return
-            except Exception:
+            except asyncio.TimeoutError:
+                log.warning("Admin bot: MAX session probe for '%s' timed out after %ss",
+                            username, SESSION_PROBE_TIMEOUT)
+                await message.reply_text(
+                    f"MAX session check for '{username}' timed out — treating it as "
+                    f"invalid. Re-authenticating..."
+                )
+            except Exception as exc:
+                log.info("Admin bot: MAX session for '%s' is invalid: %s", username, exc)
                 await message.reply_text(
                     f"Existing MAX session for '{username}' is invalid. Re-authenticating..."
                 )
