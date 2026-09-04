@@ -76,11 +76,22 @@ _PROFILES: dict[str, dict[str, Any]] = {
 #    shape and the CDN serves it.  Verified 2026-08-09 on 26.8.2: 400 → 200,
 #    1.88 MB of video/mp4.
 #
-# Taken from the live web client (``window.APP_VERSION`` on web.max.ru).
-# Raise these when MAX moves on; both are overridable via the environment.
-# Last checked 2026-09-04 (was 26.8.2/17396, published 2026-08-09).
-_DEFAULT_APP_VERSION = "26.9.3"
-_DEFAULT_BUILD_NUMBER = 18144
+# ⚠️ Do NOT read this from web.max.ru.  The web client and the native apps are
+# separate version lines: on 2026-09-04 the web client was 26.9.3 while native
+# auth still rejected anything below 26.16.1.  Native SMS auth (native_client)
+# is what the version gate applies to, so the web number is the wrong one.
+#
+# Find the real minimum with the handshake oracle — it costs nothing, since the
+# handshake requests no SMS and so does not touch the auth rate limit:
+# ``app-update-type`` in the opcode-6 reply is 1 when the server considers the
+# claimed version outdated, and absent (or 0) when it accepts it.  Bisect the
+# version string against that.  Verified 2026-09-04: the gate reads the
+# appVersion *string* only — buildNumber is not validated (26.9.3 with build
+# 999999 is rejected; 99.9.9 with build 18144 is accepted).
+#
+# Both are overridable via the environment.
+_DEFAULT_APP_VERSION = "26.16.1"   # minimum accepted by MAX on 2026-09-04
+_DEFAULT_BUILD_NUMBER = 18144      # not version-gated; kept for the CDN signature
 
 
 def app_version() -> str:

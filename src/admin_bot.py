@@ -24,6 +24,7 @@ from .bridge_state import BridgeState
 from .config import load_telegram_proxy
 from .log_buffer import LogRingBuffer
 from .max.bridge_client import BridgeMaxClient
+from .max.device_profile import app_version
 from .max.native_client import NativeMaxAuth
 from .max.session import MaxSession
 from .setup import _extract_max_user_id, parse_max_chat_id
@@ -36,6 +37,9 @@ CONFIG_FILE = "config/config.yaml"
 # Upper bound on the MAX round-trip that /authmax makes before starting the
 # re-auth conversation.
 SESSION_PROBE_TIMEOUT = 30  # seconds
+
+# Upper bound on each leg of the interactive MAX auth flow.
+AUTH_STEP_TIMEOUT = 45  # seconds
 
 
 @dataclass
@@ -131,20 +135,32 @@ class AdminBot:
         me = await self.bot.get_me()
         log.info("Admin bot started: @%s (ID: %d)", me.username, me.id)
 
+    @staticmethod
+    def _describe(message: Message) -> str:
+        """A loggable description of a message that never leaks its content.
+
+        Conversation steps carry phone numbers, SMS codes and 2FA passwords,
+        so only commands are named — anything else is reported by shape.
+        """
+        text = message.text or message.caption or ""
+        if text.startswith("/"):
+            return text.split()[0]
+        return f"<non-command, {len(text)} chars>"
+
     async def _trace_incoming(self, client: PyrogramClient, message: Message):
         """Log every message the bot receives, and why it may be ignored."""
         uid = message.from_user.id if message.from_user else None
         chat_type = message.chat.type.value if message.chat else "?"
-        text = (message.text or message.caption or "")[:64]
+        what = self._describe(message)
         if uid not in self._admin_ids:
-            log.warning("Admin bot: ignoring message from non-admin %s (%s): %r",
-                        uid, chat_type, text)
+            log.warning("Admin bot: ignoring message from non-admin %s (%s): %s",
+                        uid, chat_type, what)
         elif chat_type != "private":
             log.warning("Admin bot: ignoring message from admin %s in %s chat — "
-                        "commands only work in a direct message: %r",
-                        uid, chat_type, text)
+                        "commands only work in a direct message: %s",
+                        uid, chat_type, what)
         else:
-            log.info("Admin bot: received from %s: %r", uid, text)
+            log.info("Admin bot: received from %s: %s", uid, what)
 
     async def notify_admins(self, text: str):
         """Send a message to all admin users."""
@@ -1387,11 +1403,24 @@ class AdminBot:
             await message.reply_text("Connecting to MAX...")
 
             native = NativeMaxAuth()
-            await native.connect()
-            await native.handshake()
-
             try:
-                sms_token = await native.send_code(phone)
+                # All three legs are bounded: an unbounded connect() left the
+                # flow stuck on "Connecting to MAX..." with nothing in the log
+                # and no way for the operator to tell it apart from a hang.
+                await asyncio.wait_for(native.connect(), timeout=AUTH_STEP_TIMEOUT)
+                await asyncio.wait_for(native.handshake(), timeout=AUTH_STEP_TIMEOUT)
+                sms_token = await asyncio.wait_for(native.send_code(phone),
+                                                   timeout=AUTH_STEP_TIMEOUT)
+            except asyncio.TimeoutError:
+                await native.close()
+                self._conversations.pop(uid, None)
+                log.warning("Admin bot: MAX auth step timed out after %ss",
+                            AUTH_STEP_TIMEOUT)
+                await message.reply_text(
+                    f"MAX did not answer within {AUTH_STEP_TIMEOUT}s. "
+                    f"Try /authmax again."
+                )
+                return
             except RuntimeError as e:
                 await native.close()
                 self._conversations.pop(uid, None)
@@ -1399,6 +1428,15 @@ class AdminBot:
                     await message.reply_text(
                         "Too many auth attempts. Server blocked SMS.\n"
                         "Wait 1-2 hours and try again."
+                    )
+                elif "unsupported-version" in str(e):
+                    log.error("Admin bot: MAX rejected the claimed client version "
+                              "(%s) — raise _DEFAULT_APP_VERSION in device_profile",
+                              app_version())
+                    await message.reply_text(
+                        f"MAX rejected the client version the bridge claims "
+                        f"({app_version()}): «Приложение устарело».\n"
+                        f"Raise MAX_APP_VERSION / _DEFAULT_APP_VERSION and retry."
                     )
                 else:
                     await message.reply_text(f"Error: {e}")
