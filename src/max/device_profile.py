@@ -72,13 +72,15 @@ _PROFILES: dict[str, dict[str, Any]] = {
 #  * more subtly, MAX signs OK CDN video URLs differently for a stale client.
 #    Claiming pymax's default 25.12.14 produced ``MP4_480`` links the CDN
 #    answered with 400/10 (valid signature, refused) — which is why MAX video
-#    never forwarded.  Claiming 26.8.2 returns the very same URL shape and the
-#    CDN serves it.  Verified 2026-08-09: 400 → 200, 1.88 MB of video/mp4.
+#    never forwarded.  Claiming a current version returns the very same URL
+#    shape and the CDN serves it.  Verified 2026-08-09 on 26.8.2: 400 → 200,
+#    1.88 MB of video/mp4.
 #
 # Taken from the live web client (``window.APP_VERSION`` on web.max.ru).
 # Raise these when MAX moves on; both are overridable via the environment.
-_DEFAULT_APP_VERSION = "26.8.2"
-_DEFAULT_BUILD_NUMBER = 17396
+# Last checked 2026-09-04 (was 26.8.2/17396, published 2026-08-09).
+_DEFAULT_APP_VERSION = "26.9.3"
+_DEFAULT_BUILD_NUMBER = 18144
 
 
 def app_version() -> str:

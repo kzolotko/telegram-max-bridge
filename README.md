@@ -616,13 +616,13 @@ nano config/config.yaml   # добавили нового пользовател
 
 ```bash
 # открыть web.max.ru и выполнить в консоли браузера
-window.APP_VERSION   // → "26.8.2 (17396)" — versionName и versionCode
+window.APP_VERSION   // → "26.9.3 (18144)" — versionName и versionCode
 ```
 
 Проверить, не трогая код, можно через переменные окружения:
 
 ```bash
-sudo MAX_APP_VERSION=26.8.2 MAX_BUILD_NUMBER=17396 docker compose \
+sudo MAX_APP_VERSION=26.9.3 MAX_BUILD_NUMBER=18144 docker compose \
   -f docker-compose.yml -f docker-compose.server.yml up -d
 ```
 
