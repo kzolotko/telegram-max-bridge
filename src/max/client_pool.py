@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import TYPE_CHECKING
+from urllib.parse import quote
 
 from pymax.exceptions import SocketNotConnectedError, SocketSendError
 from pymax.files import File as PyMaxFile
@@ -22,6 +23,20 @@ if TYPE_CHECKING:
 
 
 log = logging.getLogger("bridge.max.pool")
+
+
+def wire_filename(name: str) -> str:
+    """Encode a file name the way web.max.ru does for FILE_UPLOAD.
+
+    pymax puts ``file.file_name`` verbatim into the upload's
+    ``Content-Disposition: attachment; filename=...`` header.  Raw UTF-8 there
+    reaches the MAX upload server as latin-1 mojibake — "расписание уроков"
+    arrived garbled on 2026-09-12.  The web client sends
+    ``filename=${encodeURIComponent(name)}`` (percent-encoded, unquoted), and
+    the server decodes that; ``quote`` with this safe set is the exact
+    JavaScript ``encodeURIComponent`` escape set.
+    """
+    return quote(name, safe="-_.!~*'()")
 
 # Number of automatic retry attempts on send failure.
 _MAX_RETRIES = 2
@@ -321,7 +336,7 @@ class MaxClientPool:
         """
         # ── Attempt 1: pymax FILE_UPLOAD (opcode 87) ──────────────────────
         try:
-            pymax_file = PyMaxFile(raw=file_data, url=filename)
+            pymax_file = PyMaxFile(raw=file_data, url=wire_filename(filename))
             attach = await client.inner._upload_file(pymax_file)
             if attach and attach.file_id:
                 return {"_type": "FILE", "fileId": attach.file_id}
