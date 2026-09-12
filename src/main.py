@@ -275,7 +275,17 @@ async def main(is_restart: bool = False):
                 )
             on_dm = _on_dm
         listener = MaxListener(config, lookup, mirror_tracker, bridge.handle_event, user, on_dm=on_dm)
-        await listener.start()
+        try:
+            await listener.start()
+        except Exception as e:
+            # A dead MAX token (FAIL_LOGIN_TOKEN) or an unreachable MAX must
+            # not take the whole process down: the admin bot starts *after*
+            # this loop, and it is the only way to re-authenticate remotely.
+            # Observed 2026-09-12 — the container restart-looped and /authmax
+            # was unreachable until the startup order was made tolerant.
+            log.error("MAX listener for %s failed to start: %s — MAX side is "
+                      "offline for this user; run /authmax %s in the admin bot, "
+                      "then /restart", user.name, e, user.name)
         max_listeners.append(listener)
         # Pool borrows the listener's client for sending (single connection per user).
         max_pool.set_listener(user.max_user_id, listener)
