@@ -299,7 +299,7 @@ rsync -az --delete \
   --exclude 'config/credentials.yaml' \
   --exclude 'config/e2e_config.yaml' \
   --exclude '__pycache__/' --exclude '.pytest_cache/' \
-  --exclude '.DS_Store' --exclude '.venv/' \
+  --exclude '.DS_Store' --exclude '.venv/' --exclude '.claude/' \
   ./ kzolotko@158.160.255.51:/opt/telegram-max-bridge/
 
 ssh kzolotko@158.160.255.51 'cd /opt/telegram-max-bridge && \
@@ -500,6 +500,7 @@ src/
 | Голосовые сообщения | ✅ (передаются как аудио `.ogg`) |
 | Альбомы (несколько медиафайлов) | ✅ |
 | Ответы (reply) | ✅ |
+| Пересланные сообщения | ✅ TG→MAX как обычное сообщение; MAX→TG с пометкой `↪ Переслано от <имя>` |
 | Редактирование | ✅ |
 | Форматирование (bold, italic, underline, strikethrough) | ✅ |
 | Реакции | ✅ (требуется supergroup для TG) |

@@ -265,16 +265,15 @@ def prepend_sender_name(name: str, text: str) -> str:
     return f"[{name}]: {text}"
 
 
-def prepend_sender_name_fmt(
-    name: str,
+def prepend_text_fmt(
+    prefix: str,
     text: str,
     entities: list[dict] | None,
 ) -> tuple[str, list[dict] | None]:
-    """Prepend ``[name]: `` to text and shift all entity offsets.
+    """Prepend ``prefix`` to text and shift all entity offsets accordingly.
 
     Returns ``(new_text, shifted_entities)``.
     """
-    prefix = f"[{name}]: "
     shift = len(prefix)
     new_text = prefix + text
     if not entities:
@@ -284,3 +283,15 @@ def prepend_sender_name_fmt(
         for ent in entities
     ]
     return new_text, shifted
+
+
+def prepend_sender_name_fmt(
+    name: str,
+    text: str,
+    entities: list[dict] | None,
+) -> tuple[str, list[dict] | None]:
+    """Prepend ``[name]: `` to text and shift all entity offsets.
+
+    Returns ``(new_text, shifted_entities)``.
+    """
+    return prepend_text_fmt(f"[{name}]: ", text, entities)

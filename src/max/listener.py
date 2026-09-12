@@ -4,7 +4,7 @@ import os
 from typing import Callable, Awaitable, Any
 
 from .bridge_client import BridgeMaxClient
-from ..bridge.formatting import max_elements_to_internal
+from ..bridge.formatting import max_elements_to_internal, prepend_text_fmt
 from ..bridge.mirror_tracker import MirrorTracker
 from ..config import ConfigLookup
 from ..dedup import SeenIds
@@ -512,10 +512,7 @@ class MaxListener:
             return
 
         sender_name = await self._resolve_sender_name(sender_id)
-        text = message.get("text")
-        elements = message.get("elements")
-        fmt = max_elements_to_internal(elements) or None
-        attaches = message.get("attaches", [])
+        text, fmt, attaches = await self._unwrap_forward(message)
 
         reply_to = None
         link = message.get("link")
@@ -610,6 +607,65 @@ class MaxListener:
                 source_msg_id=msg_id,
                 formatting=fmt,
             ))
+
+    # ── Forwarded messages ────────────────────────────────────────────────────
+
+    _FORWARD_MAX_DEPTH = 5  # forward-of-a-forward chains are rare but legal
+
+    async def _unwrap_forward(
+        self, message: dict,
+    ) -> tuple[str | None, list[dict] | None, list[dict]]:
+        """Return ``(text, formatting, attaches)`` that should be mirrored.
+
+        A forwarded MAX message arrives as an *empty envelope*: ``text`` is
+        ``""``, ``attaches`` is ``[]``, and the real content sits under
+        ``link.message`` with ``link.type == "FORWARD"``.  Observed in
+        production on 2026-09-12: a forwarded photo produced no bridge event,
+        no log line, nothing — the envelope had neither text nor attaches, so
+        every emit branch was skipped.
+
+        The original author is credited with a ``↪ Переслано от <name>`` line
+        (omitted when the profile cannot be resolved), and formatting offsets
+        are shifted past that prefix.  Any text the forwarder typed into the
+        envelope itself is appended after the forwarded content.
+        """
+        inner = message
+        origin_sender = None
+        for _ in range(self._FORWARD_MAX_DEPTH):
+            link = inner.get("link") or {}
+            fwd = link.get("message")
+            if link.get("type") != "FORWARD" or not isinstance(fwd, dict):
+                break
+            inner = fwd
+            origin_sender = fwd.get("sender") or origin_sender
+
+        if inner is message:
+            return (
+                message.get("text"),
+                max_elements_to_internal(message.get("elements")) or None,
+                message.get("attaches") or [],
+            )
+
+        text = inner.get("text") or ""
+        fmt = max_elements_to_internal(inner.get("elements")) or None
+        attaches = inner.get("attaches") or []
+
+        prefix = "↪ Переслано"
+        if origin_sender:
+            name = await self._resolve_sender_name(origin_sender)
+            if not name.startswith("User:"):
+                prefix += f" от {name}"
+        # Prefix on its own line only when there is content to follow it —
+        # a bare media forward keeps the caption to a single line.
+        text, fmt = prepend_text_fmt(prefix + ("\n" if text else ""), text, fmt)
+
+        own_comment = message.get("text") or ""
+        if own_comment:
+            text = f"{text}\n{own_comment}"
+
+        log.debug("MAX forward unwrapped: origin_sender=%s text=%r attaches=%s",
+                  origin_sender, text[:60], [a.get("_type") for a in attaches])
+        return text, fmt, attaches
 
     # ── Attachment download ───────────────────────────────────────────────────
 
@@ -777,11 +833,8 @@ class MaxListener:
             )
             return
 
-        text = message.get("text")
         sender_name = await self._resolve_sender_name(sender_id)
-        elements = message.get("elements")
-        fmt = max_elements_to_internal(elements) or None
-        attaches = message.get("attaches", [])
+        text, fmt, attaches = await self._unwrap_forward(message)
 
         log.debug("MAX DM: chat=%s sender=%s (%s) msg=%s text=%r attaches=%s",
                  chat_id, sender_id, sender_name, msg_id,
