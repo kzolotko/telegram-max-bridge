@@ -21,6 +21,22 @@ RECONNECT_MAX_DELAY = 60
 PING_INTERVAL = 30          # seconds between health pings
 PING_MAX_FAILURES = 3       # force-disconnect after N consecutive failures
 
+# Login rejections no amount of retrying will fix: the stored token was
+# revoked, or was issued for a different device profile.  Only a fresh
+# /authmax produces a usable token, so on these the reconnect loop stops
+# instead of hammering MAX every minute (which on 2026-09-12 escalated into
+# SESSION_INIT timeouts, i.e. throttling), and the admins are told what to do.
+PERMANENT_LOGIN_ERRORS = ("FAIL_LOGIN_TOKEN", "FAIL_WRONG_PASSWORD")
+
+
+def is_permanent_login_error(exc: BaseException) -> bool:
+    """True for a MAX login rejection that only re-authentication can fix."""
+    code = getattr(exc, "error", None)  # pymax.exceptions.Error carries it
+    if isinstance(code, str) and code in PERMANENT_LOGIN_ERRORS:
+        return True
+    text = str(exc)
+    return any(c in text for c in PERMANENT_LOGIN_ERRORS)
+
 
 class MaxListener:
     """Listens for messages in MAX using a user account via native TCP/SSL.
@@ -61,6 +77,13 @@ class MaxListener:
         self._seen = SeenIds(f"max:{user.name}")
         # Set of all known group/channel chat IDs (for DM detection)
         self._known_group_ids: set[int] = set()
+        # Set when MAX rejected the stored token for good (see
+        # PERMANENT_LOGIN_ERRORS): the reconnect loop has stopped and only a
+        # re-authentication plus restart brings this listener back.
+        self.auth_failed: str | None = None
+        # Invoked once, with (listener, message), when that happens.  main.py
+        # points it at the admin bot once the bot is up.
+        self.on_auth_failure: Callable[["MaxListener", str], Awaitable[None]] | None = None
 
         # Note: name cache is populated at runtime from MAX (preload + on-demand).
         # Config user names (e.g. "mary") are NOT cached here — we prefer
@@ -93,12 +116,14 @@ class MaxListener:
             await self._connect()
         except Exception as exc:
             connected = False
-            log.error(
-                "MAX listener %s: initial connect failed: %s — continuing in "
-                "DISCONNECTED state, will keep retrying. If this is a token "
-                "error, re-authenticate (/authmax %s) and restart.",
-                self.user.name, exc, self.user.name,
-            )
+            if is_permanent_login_error(exc):
+                await self._mark_auth_failed(exc)
+            else:
+                log.error(
+                    "MAX listener %s: initial connect failed: %s — continuing in "
+                    "DISCONNECTED state, will keep retrying.",
+                    self.user.name, exc,
+                )
 
         self._worker_task = asyncio.create_task(self._worker())
         self._monitor_task = asyncio.create_task(self._reconnect_loop())
@@ -193,7 +218,7 @@ class MaxListener:
 
     async def _reconnect_loop(self):
         delay = RECONNECT_BASE_DELAY
-        while not self._stopped:
+        while not self._stopped and not self.auth_failed:
             try:
                 if self.client and self.client.recv_task:
                     await self.client.recv_task
@@ -218,7 +243,33 @@ class MaxListener:
                 log.info("MAX listener %s: reconnected (User ID: %d)",
                          self.user.name, self._my_user_id)
             except Exception as e:
+                if is_permanent_login_error(e):
+                    await self._mark_auth_failed(e)
+                    break
                 log.error("MAX listener %s: reconnect failed: %s", self.user.name, e)
+
+    def auth_failure_message(self) -> str:
+        """Operator-facing text for a rejected token (sent to the admins)."""
+        return (
+            f"⛔ MAX rejected the token for '{self.user.name}': {self.auth_failed}\n"
+            f"The bridge keeps running; the MAX side of '{self.user.name}' is "
+            f"offline and no longer retrying.\n"
+            f"To recover: /authmax {self.user.name}, then /restart."
+        )
+
+    async def _mark_auth_failed(self, exc: BaseException) -> None:
+        if self.auth_failed:
+            return
+        self.auth_failed = getattr(exc, "error", None) or str(exc)
+        log.error("MAX listener %s: login rejected for good (%s) — stopping "
+                  "reconnect attempts; run /authmax %s, then /restart",
+                  self.user.name, self.auth_failed, self.user.name)
+        if self.on_auth_failure:
+            try:
+                await self.on_auth_failure(self, self.auth_failure_message())
+            except Exception as e:
+                log.warning("MAX listener %s: could not deliver the auth-failure "
+                            "notice: %s", self.user.name, e)
 
     async def stop(self):
         self._stopped = True

@@ -314,7 +314,11 @@ class AdminBot:
         # MAX listeners
         for listener in self.max_listeners:
             c = listener.client
-            status = "connected" if (c and c.is_connected) else "DISCONNECTED"
+            if listener.auth_failed:
+                status = (f"TOKEN REJECTED ({listener.auth_failed}) — "
+                          f"/authmax {listener.user.name}, then /restart")
+            else:
+                status = "connected" if (c and c.is_connected) else "DISCONNECTED"
             lines.append(f"  MAX listener {listener.user.name}: {status}")
 
         # Pause state

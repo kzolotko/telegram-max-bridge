@@ -71,20 +71,104 @@ async def _stop(listener):
     await listener.stop()
 
 
-async def test_start_survives_a_dead_token(session_dir):
-    """A revoked token must not propagate out of start()."""
-    err = RuntimeError("FAIL_LOGIN_TOKEN [login.token]")
+async def test_start_survives_a_failed_connect(session_dir):
+    """A transient failure (MAX unreachable) must not propagate out of start()."""
+    err = TimeoutError("Send and wait failed (socket)")
     listener, calls = _make_listener(session_dir, connect_error=err)
 
     user_id = await listener.start()
 
     assert user_id == 777
     assert calls == [1]
+    assert listener.auth_failed is None
     # The reconnect loop must be running so the listener recovers by itself
-    # once the token is valid again.
+    # once MAX is reachable again.
     assert listener._monitor_task is not None
     assert not listener._monitor_task.done()
     assert listener._worker_task is not None
+    await _stop(listener)
+
+
+# ── Permanent login rejections ───────────────────────────────────────────────
+#
+# 2026-09-12: with a revoked token the reconnect loop retried every 60 s for
+# good, MAX started answering SESSION_INIT with timeouts (throttling), and
+# nobody was told — the only fix is /authmax, which needs a human.
+
+class _PyMaxLikeError(Exception):
+    """Shape of pymax.exceptions.Error: the code sits in ``.error``."""
+
+    def __init__(self, error):
+        super().__init__(f"PyMax Error: Ошибка входа {error} [login.token]")
+        self.error = error
+
+
+async def test_rejected_token_at_start_stops_retrying_and_notifies(session_dir):
+    listener, calls = _make_listener(
+        session_dir, connect_error=_PyMaxLikeError("FAIL_LOGIN_TOKEN"))
+    notices = []
+
+    async def on_auth_failure(lst, text):
+        notices.append((lst, text))
+
+    listener.on_auth_failure = on_auth_failure
+
+    await listener.start()
+
+    assert listener.auth_failed == "FAIL_LOGIN_TOKEN"
+    # The reconnect loop exits instead of hammering MAX with a dead token.
+    await asyncio.wait_for(listener._monitor_task, timeout=1)
+    assert calls == [1]
+    assert len(notices) == 1
+    assert notices[0][0] is listener
+    assert "/authmax alice" in notices[0][1]
+    assert "/restart" in notices[0][1]
+    await _stop(listener)
+
+
+async def test_rejection_during_reconnect_stops_the_loop(session_dir, monkeypatch):
+    """First connect works; the token dies later (profile mismatch here)."""
+    from src.max import listener as listener_mod
+    monkeypatch.setattr(listener_mod, "RECONNECT_BASE_DELAY", 0)
+
+    listener, calls = _make_listener(session_dir, connect_error=None)
+    outcomes = iter([None, RuntimeError("FAIL_WRONG_PASSWORD [login.cred]")])
+
+    async def _connect():
+        calls.append(1)
+        err = next(outcomes)
+        if err is not None:
+            raise err
+
+    listener._connect = _connect
+    notices = []
+
+    async def on_auth_failure(lst, text):
+        notices.append(text)
+
+    listener.on_auth_failure = on_auth_failure
+
+    await listener.start()
+    assert listener.auth_failed is None
+
+    # client is None in this harness, so the loop goes straight to a retry.
+    await asyncio.wait_for(listener._monitor_task, timeout=2)
+
+    assert calls == [1, 1]
+    assert listener.auth_failed == "FAIL_WRONG_PASSWORD [login.cred]"
+    assert len(notices) == 1
+    await _stop(listener)
+
+
+async def test_rejected_token_without_callback_is_reported_later(session_dir):
+    """Listeners start before the admin bot: main() reads the flag afterwards."""
+    listener, _ = _make_listener(
+        session_dir, connect_error=_PyMaxLikeError("FAIL_LOGIN_TOKEN"))
+
+    await listener.start()
+
+    assert listener.auth_failed == "FAIL_LOGIN_TOKEN"
+    assert "/authmax alice" in listener.auth_failure_message()
     await _stop(listener)
 
 

@@ -275,17 +275,10 @@ async def main(is_restart: bool = False):
                 )
             on_dm = _on_dm
         listener = MaxListener(config, lookup, mirror_tracker, bridge.handle_event, user, on_dm=on_dm)
-        try:
-            await listener.start()
-        except Exception as e:
-            # A dead MAX token (FAIL_LOGIN_TOKEN) or an unreachable MAX must
-            # not take the whole process down: the admin bot starts *after*
-            # this loop, and it is the only way to re-authenticate remotely.
-            # Observed 2026-09-12 — the container restart-looped and /authmax
-            # was unreachable until the startup order was made tolerant.
-            log.error("MAX listener for %s failed to start: %s — MAX side is "
-                      "offline for this user; run /authmax %s in the admin bot, "
-                      "then /restart", user.name, e, user.name)
+        # start() swallows a failed connect (dead token, MAX unreachable) and
+        # leaves the listener DISCONNECTED; only a missing session file — a
+        # config error — still raises here.
+        await listener.start()
         max_listeners.append(listener)
         # Pool borrows the listener's client for sending (single connection per user).
         max_pool.set_listener(user.max_user_id, listener)
@@ -342,6 +335,18 @@ async def main(is_restart: bool = False):
             f"  {bridge_count} bridge(s), {user_count} user(s)"
         )
 
+        # A token MAX rejected for good is only recoverable via /authmax, so
+        # the admins must hear about it.  Listeners start before the bot, so
+        # report rejections that already happened, and route later ones
+        # (from the reconnect loop) as they occur.
+        async def _on_auth_failure(listener, text):
+            await admin_bot.notify_admins(text)
+
+        for listener in max_listeners:
+            listener.on_auth_failure = _on_auth_failure
+            if listener.auth_failed:
+                await admin_bot.notify_admins(listener.auth_failure_message())
+
     # Periodic health check — log connection status every 5 minutes
     # and write heartbeat file for Docker healthcheck
     health_file = os.path.join(config.sessions_dir, ".healthcheck")
@@ -364,7 +369,10 @@ async def main(is_restart: bool = False):
             # Log MAX connection status (one connection per user, owned by listener)
             for listener in max_listeners:
                 client = listener.client
-                if not client or not client.is_connected:
+                if listener.auth_failed:
+                    status = (f"TOKEN REJECTED ({listener.auth_failed}) — "
+                              f"run /authmax {listener.user.name}, then /restart")
+                elif not client or not client.is_connected:
                     status = "DISCONNECTED"
                 else:
                     pong = await client.ping(timeout=5.0)
