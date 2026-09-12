@@ -77,8 +77,8 @@ _PROFILES: dict[str, dict[str, Any]] = {
 #
 # Taken from the live web client (``window.APP_VERSION`` on web.max.ru).
 # Raise these when MAX moves on; both are overridable via the environment.
-_DEFAULT_APP_VERSION = "26.8.2"
-_DEFAULT_BUILD_NUMBER = 17396
+_DEFAULT_APP_VERSION = "26.9.6"
+_DEFAULT_BUILD_NUMBER = 18433
 
 
 def app_version() -> str:
