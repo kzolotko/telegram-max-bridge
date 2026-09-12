@@ -81,13 +81,31 @@ class MaxListener:
                 f"No device_id in MAX session for {self.user.name}. "
                 f"Re-authenticate with 'python -m src.auth'."
             )
-        await self._connect()
+        # A failed *initial* connect must not be fatal.  The commonest cause is
+        # an expired/revoked token (FAIL_LOGIN_TOKEN), and raising here killed
+        # the whole process — which docker then restarted into a crash loop,
+        # taking down the admin bot that /authmax needs.  Start the background
+        # tasks regardless: _reconnect_loop copes with ``client is None`` and
+        # keeps retrying, so the listener recovers on its own once the token is
+        # valid again.
+        connected = True
+        try:
+            await self._connect()
+        except Exception as exc:
+            connected = False
+            log.error(
+                "MAX listener %s: initial connect failed: %s — continuing in "
+                "DISCONNECTED state, will keep retrying. If this is a token "
+                "error, re-authenticate (/authmax %s) and restart.",
+                self.user.name, exc, self.user.name,
+            )
 
         self._worker_task = asyncio.create_task(self._worker())
         self._monitor_task = asyncio.create_task(self._reconnect_loop())
         self._ping_task = asyncio.create_task(self._ping_watchdog())
 
-        log.info("Started for %s (User ID: %d)", self.user.name, self._my_user_id)
+        log.info("Started for %s (User ID: %d)%s", self.user.name,
+                 self._my_user_id, "" if connected else " [DISCONNECTED]")
         return self._my_user_id
 
     async def _connect(self):
