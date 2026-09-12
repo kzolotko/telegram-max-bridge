@@ -60,6 +60,20 @@ def test_runtime_model_matches_auth_dict_for_web(env, monkeypatch):
     assert login["userAgent"] == fixed
 
 
+def test_socket_client_accepts_web_profile(env, tmp_path):
+    """pymax reserves WEB for its websocket client; the bridge lifts that gate."""
+    from uuid import uuid4
+    from pymax import SocketMaxClient
+
+    env(None)
+    client = SocketMaxClient(
+        phone="+70000000000", token="t", device_id=uuid4(),
+        send_fake_telemetry=False, reconnect=False,
+        work_dir=str(tmp_path), headers=build_user_agent(),
+    )
+    assert client.user_agent.device_type == "WEB"
+
+
 def test_runtime_model_matches_auth_dict_for_desktop(env, monkeypatch):
     env("DESKTOP")
     fixed = dict(device_profile.user_agent_dict())

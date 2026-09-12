@@ -67,6 +67,14 @@ def _rebind_login_user_agent() -> None:
 
 _rebind_login_user_agent()
 
+# pymax gates device types per transport: SocketMaxClient (TCP/SSL to
+# api.oneme.ru) accepts only ANDROID/IOS/DESKTOP and reserves WEB for its
+# websocket client.  The gate is pymax's own; the MAX server takes the WEB
+# profile over TCP just fine (verified 2026-09-12 with NativeMaxAuth, which
+# uses the same transport), and since that date WEB is the only profile MAX
+# still issues phone-auth tokens for.
+SocketMaxClient.allowed_device_types = {*SocketMaxClient.allowed_device_types, "WEB"}
+
 
 def build_user_agent() -> UserAgentPayload:
     """Build the runtime handshake user agent.
