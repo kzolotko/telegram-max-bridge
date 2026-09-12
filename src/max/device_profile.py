@@ -6,7 +6,13 @@ issued: logging in with a different ``deviceType`` fails with
 must be identical in ``src.auth`` and at runtime — hence one shared source
 here, selected by the ``MAX_DEVICE_TYPE`` environment variable.
 
-DESKTOP is the default and keeps the historical behaviour.
+WEB is the default since 2026-09-12: MAX stopped accepting phone
+authentication from the DESKTOP profile at all — the handshake answers with
+``app-update-type`` and no ``phone-auth-enabled`` flag, and ``START_AUTH``
+fails with ``client.unsupported-version`` whatever ``appVersion`` is claimed
+(the desktop app evidently has its own version line).  The WEB profile with
+the live web client's ``appVersion`` is accepted.  Existing DESKTOP tokens keep
+working only with ``MAX_DEVICE_TYPE=DESKTOP`` set explicitly.
 """
 
 import logging
@@ -30,6 +36,22 @@ TIMEZONES = [
 
 # Per-device overrides on top of the common fields below.
 _PROFILES: dict[str, dict[str, Any]] = {
+    # Mirrors the SESSION_INIT userAgent of web.max.ru (2026-09-12).  Note the
+    # web client sends neither buildNumber nor clientSessionId — see
+    # user_agent_dict().
+    "WEB": {
+        "deviceType": "WEB",
+        "pushDeviceType": "WEBPUSH",
+        "isPwa": False,
+        "deviceName": "Chrome",
+        "osVersion": "macOS 10.15.7",
+        "screen": "1117x1728 2.0x",
+        "headerUserAgent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/140.0.0.0 Safari/537.36"
+        ),
+    },
     "DESKTOP": {
         "deviceType": "DESKTOP",
         "deviceName": "vkmax Python",
@@ -96,24 +118,34 @@ def build_number() -> int:
         return _DEFAULT_BUILD_NUMBER
 
 
+DEFAULT_DEVICE_TYPE = "WEB"
+
+
 def current_device_type() -> str:
-    """The configured device type, falling back to DESKTOP if unknown."""
-    name = (os.getenv("MAX_DEVICE_TYPE") or "DESKTOP").strip().upper()
+    """The configured device type, falling back to the default if unknown."""
+    name = (os.getenv("MAX_DEVICE_TYPE") or DEFAULT_DEVICE_TYPE).strip().upper()
     if name not in _PROFILES:
-        log.warning("Unknown MAX_DEVICE_TYPE=%r, using DESKTOP", name)
-        return "DESKTOP"
+        log.warning("Unknown MAX_DEVICE_TYPE=%r, using %s", name, DEFAULT_DEVICE_TYPE)
+        return DEFAULT_DEVICE_TYPE
     return name
 
 
 def user_agent_dict() -> dict[str, Any]:
-    """The ``userAgent`` object sent in handshake/login packets."""
-    profile = _PROFILES[current_device_type()]
-    return {
+    """The ``userAgent`` object sent in handshake/login packets.
+
+    Must be byte-for-byte the same shape at auth time (``NativeMaxAuth``) and
+    at runtime (pymax login): MAX binds the token to the declared profile.
+    """
+    device_type = current_device_type()
+    profile = _PROFILES[device_type]
+    ua: dict[str, Any] = {
         "locale": "ru",
         "deviceLocale": "ru",
         "appVersion": app_version(),
         "timezone": choice(TIMEZONES),
-        "clientSessionId": randint(1, 15),
-        "buildNumber": build_number(),
-        **profile,
     }
+    if device_type != "WEB":
+        # Native apps report a build; the web client does not have one.
+        ua["clientSessionId"] = randint(1, 15)
+        ua["buildNumber"] = build_number()
+    return {**ua, **profile}

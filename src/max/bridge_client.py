@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
+from pydantic import model_serializer
 from pymax import SocketMaxClient
 from pymax.payloads import UserAgentPayload
 from pymax.static.enum import Opcode
@@ -29,6 +30,44 @@ log = logging.getLogger("bridge.max.client")
 # Dummy phone — required by PyMax constructor but unused for token auth.
 _DUMMY_PHONE = "+70000000000"
 
+class DeviceUserAgent(UserAgentPayload):
+    """pymax's userAgent model, extended to carry exactly what
+    ``device_profile.user_agent_dict()`` declares.
+
+    The WEB profile adds ``pushDeviceType`` / ``isPwa`` and has no
+    ``buildNumber`` / ``clientSessionId``; pymax's model hard-codes the latter
+    two with defaults.  Fields left unset are omitted from the wire so the
+    runtime handshake matches the auth-time one field for field.
+    """
+
+    push_device_type: str | None = None
+    is_pwa: bool | None = None
+    client_session_id: int | None = None  # type: ignore[assignment]
+    build_number: int | None = None  # type: ignore[assignment]
+
+    @model_serializer(mode="wrap")
+    def _omit_unset(self, handler):
+        return {k: v for k, v in handler(self).items() if v is not None}
+
+
+def _rebind_login_user_agent() -> None:
+    """Make pymax's LOGIN payload serialise our model, not its parent.
+
+    ``SyncPayload`` declares ``user_agent: UserAgentPayload``, and pydantic v2
+    serialises nested models by the *declared* type: the WEB-only fields would
+    be dropped and ``buildNumber: null`` / ``clientSessionId: null`` emitted —
+    a handshake/login mismatch MAX would reject.  The handshake itself is safe
+    (pymax dumps the model top-level there).
+    """
+    from pymax.payloads import SyncPayload
+    SyncPayload.__annotations__["user_agent"] = DeviceUserAgent
+    SyncPayload.model_fields["user_agent"].annotation = DeviceUserAgent
+    SyncPayload.model_rebuild(force=True)
+
+
+_rebind_login_user_agent()
+
+
 def build_user_agent() -> UserAgentPayload:
     """Build the runtime handshake user agent.
 
@@ -40,20 +79,9 @@ def build_user_agent() -> UserAgentPayload:
     """
     ua = user_agent_dict()
     log.info("MAX handshake: device=%s appVersion=%s build=%s",
-             ua["deviceType"], ua["appVersion"], ua["buildNumber"])
-    return UserAgentPayload(
-        device_type=ua["deviceType"],
-        device_name=ua["deviceName"],
-        os_version=ua["osVersion"],
-        screen=ua["screen"],
-        header_user_agent=ua["headerUserAgent"],
-        locale=ua["locale"],
-        device_locale=ua["deviceLocale"],
-        app_version=ua["appVersion"],
-        timezone=ua["timezone"],
-        client_session_id=ua["clientSessionId"],
-        build_number=ua["buildNumber"],
-    )
+             ua["deviceType"], ua["appVersion"], ua.get("buildNumber", "-"))
+    # Keys are the wire (camelCase) names — the model accepts aliases.
+    return DeviceUserAgent(**ua)
 
 
 class BridgeMaxClient:
