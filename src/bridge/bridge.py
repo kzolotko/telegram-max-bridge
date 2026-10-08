@@ -147,6 +147,8 @@ class Bridge:
                 max_user_id, max_chat_id, event.media_list,
                 text, reply_to, elements=max_elements,
             )
+            if not max_msg_id:
+                raise RuntimeError("MAX did not confirm media group delivery")
             if max_msg_id and event.source_msg_id is not None:
                 tg_msg_ids: list[int] | None = None
                 if event.source_msg_ids:
@@ -173,6 +175,8 @@ class Bridge:
                 max_user_id, max_chat_id, event.media.data,
                 event.media.filename, text, reply_to,
             )
+            if not max_msg_id:
+                raise RuntimeError("MAX did not confirm photo delivery")
             if max_msg_id and event.source_msg_id is not None:
                 self.store.store(tg_chat_id, int(event.source_msg_id), max_chat_id, max_msg_id)
                 self.mirrors.mark_max(max_msg_id)

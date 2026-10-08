@@ -42,15 +42,14 @@ async def get_upload_url(client: "BridgeMaxClient") -> str:
 
 async def upload_photo_to_url(upload_url: str, data: bytes, filename: str = "photo.jpg") -> str:
     """Upload image bytes to the MAX upload URL, return photo token."""
-    api_token = upload_url.split("apiToken=")[1].split("&")[0]
-
     form = aiohttp.FormData()
     form.add_field("file", data, filename=filename, content_type="image/jpeg")
 
+    # The URL already contains upload authorization. MAX now uses a signed
+    # `r` query instead of apiToken; send the supplied URL without adding params.
     async with aiohttp.ClientSession() as session:
         async with session.post(
             upload_url,
-            params={"apiToken": api_token},
             data=form,
             headers=UPLOAD_HEADERS,
         ) as resp:
@@ -96,13 +95,11 @@ async def get_file_upload_url(client: "BridgeMaxClient") -> str:
 
 async def _do_upload(upload_url: str, data: bytes, filename: str, content_type: str) -> dict:
     """HTTP multipart upload, returns raw server response."""
-    api_token = upload_url.split("apiToken=")[1].split("&")[0]
     form = aiohttp.FormData()
     form.add_field("file", data, filename=filename, content_type=content_type)
     async with aiohttp.ClientSession() as session:
         async with session.post(
             upload_url,
-            params={"apiToken": api_token},
             data=form,
             headers=UPLOAD_HEADERS,
         ) as resp:
